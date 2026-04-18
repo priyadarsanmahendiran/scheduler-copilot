@@ -48,7 +48,7 @@ Schedule Applied
 export ANTHROPIC_API_KEY=sk-ant-...
 ./mvnw spring-boot:run
 ```
-First run downloads OR-Tools native libraries (~7s). The app starts on `http://localhost:8080`.
+The app starts on `http://localhost:8080`.
 
 **Terminal 2 — Frontend**
 ```bash
@@ -56,7 +56,7 @@ cd frontend
 npm install
 npm run dev
 ```
-Opens on `http://localhost:5173`. The Vite dev server proxies all API calls to the backend.
+Opens on `http://localhost:5173`.
 
 **Swagger UI:** `http://localhost:8080/swagger-ui.html`
 
@@ -147,18 +147,6 @@ frontend/src/
     ├── GanttChart.jsx                # Horizontal bar chart, job-colored bars
     └── AnalysisPanel.jsx             # Claude analysis, option cards, decision buttons
 ```
-
-## Running Tests
-
-```bash
-# All tests
-./mvnw test
-
-# Single test class
-./mvnw test -Dtest=ScheduleDecisionServiceTest
-```
-
-All services are unit-tested with Mockito. Tests mock `CpSatSchedulingService` and `ClaudeAgentService` so they run without OR-Tools or an API key.
 
 ## License
 

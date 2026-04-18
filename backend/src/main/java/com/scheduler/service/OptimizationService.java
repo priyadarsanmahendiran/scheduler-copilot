@@ -39,4 +39,23 @@ public class OptimizationService {
             log.error("Failed to process failure for machine {}: {}", machineId, e.getMessage(), e);
         }
     }
+
+    @Async
+    public void handleMachineRecovery(String machineId) {
+        log.info("Recovery optimization triggered for machine {}", machineId);
+
+        String existing = store.getPendingSession(machineId);
+        if (existing != null) {
+            log.info("Pending session {} already exists for machine {}, skipping recovery", existing, machineId);
+            return;
+        }
+
+        try {
+            ScheduleDecisionResponse response = scheduleDecisionService.processRecovery(machineId);
+            log.info("Recovery session {} created for machine {}. Awaiting operator choice.",
+                    response.getSessionId(), machineId);
+        } catch (Exception e) {
+            log.error("Failed to process recovery for machine {}: {}", machineId, e.getMessage(), e);
+        }
+    }
 }

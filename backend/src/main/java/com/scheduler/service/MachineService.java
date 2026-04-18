@@ -60,4 +60,35 @@ public class MachineService {
             broadcaster.broadcast("machines", getAllMachines());
         }
     }
+
+    /**
+     * Called when a heartbeat arrives for any machine — including DOWN machines.
+     * Returns true if the machine was DOWN and just self-recovered (caller should
+     * trigger recovery analysis); false for a normal heartbeat on a running machine.
+     */
+    public boolean handleIncomingHeartbeat(String id) {
+        Machine machine = store.getMachines().get(id);
+        if (machine == null) return false;
+        if (machine.isHeartbeatBlocked()) {
+            markAsRecovered(id);
+            return true;
+        }
+        updateHeartbeat(id, System.currentTimeMillis());
+        return false;
+    }
+
+    public void markAsRecovered(String id) {
+        Machine machine = store.getMachines().get(id);
+        if (machine != null) {
+            machine.setStatus("RUNNING");
+            machine.setHeartbeatBlocked(false);
+            machine.setDegraded(false);
+            machine.setRiskLevel(null);
+            machine.setRiskReason(null);
+            // Reset heartbeat timestamp so FailureDetectionService doesn't
+            // immediately re-detect this machine as failed.
+            machine.setLastHeartbeat(System.currentTimeMillis());
+            broadcaster.broadcast("machines", getAllMachines());
+        }
+    }
 }

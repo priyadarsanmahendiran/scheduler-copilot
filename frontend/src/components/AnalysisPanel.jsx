@@ -3,16 +3,27 @@ import GanttChart from './GanttChart'
 
 function parseAnalysis(text) {
   if (!text) return {}
-  const extract = (pattern) => {
-    const m = text.match(pattern)
-    return m ? m[1].trim() : ''
+  // Strip markdown bold so headers match regardless of Claude's formatting
+  const clean = text.replace(/\*+/g, '')
+  const upper = clean.toUpperCase()
+
+  const extractBetween = (startMarker, ...endMarkers) => {
+    const start = upper.indexOf(startMarker)
+    if (start < 0) return ''
+    const colonIdx = clean.indexOf(':', start)
+    if (colonIdx < 0 || colonIdx > start + 60) return ''
+    const contentStart = colonIdx + 1
+    const end = endMarkers.map(m => upper.indexOf(m, contentStart)).filter(i => i > contentStart)
+    const cutoff = end.length ? Math.min(...end) : -1
+    return (cutoff > 0 ? clean.slice(contentStart, cutoff) : clean.slice(contentStart)).trim()
   }
+
   return {
-    situation:      extract(/SITUATION:\s*([\s\S]*?)(?=\n\nOPTION A|OPTION A|$)/),
-    optionA:        extract(/OPTION A \(?Fast\)?:?\s*([\s\S]*?)(?=\n\nOPTION B|OPTION B|$)/),
-    optionB:        extract(/OPTION B \(?Cheap\)?:?\s*([\s\S]*?)(?=\n\nCASCADE|CASCADE|$)/),
-    cascade:        extract(/CASCADE RISK:\s*([\s\S]*?)(?=\n\nMY RECOMMEND|MY RECOMMEND|$)/),
-    recommendation: extract(/MY RECOMMENDATION:\s*([\s\S]*?)(?=\n\n|$)/),
+    situation:      extractBetween('SITUATION:', 'OPTION A'),
+    optionA:        extractBetween('OPTION A', 'OPTION B', 'CASCADE', 'MY RECOMMEND'),
+    optionB:        extractBetween('OPTION B', 'CASCADE', 'MY RECOMMEND'),
+    cascade:        extractBetween('CASCADE', 'MY RECOMMEND'),
+    recommendation: extractBetween('MY RECOMMENDATION:') || extractBetween('MY RECOMMEND:'),
   }
 }
 
@@ -71,8 +82,14 @@ function ChatBubble({ role, content }) {
   )
 }
 
-export default function AnalysisPanel({ decision, analyzing, analyzingId, onChoose, onDismiss }) {
+export default function AnalysisPanel({ decision, analyzing, analyzingId, onChoose, onDismiss, mode = 'failure' }) {
   const sections = parseAnalysis(decision?.claudeAnalysis)
+
+  const isRecovery = mode === 'recovery'
+  const optionALabel = isRecovery ? 'Rebalance' : 'Fast Track'
+  const optionBLabel = isRecovery ? 'Restore'   : 'Cost Optimal'
+  const optionAIcon  = isRecovery ? '🔄' : '⚡'
+  const optionBIcon  = isRecovery ? '↩'  : '💰'
 
   const [chatMessages, setChatMessages] = useState([])
   const [chatInput, setChatInput] = useState('')
@@ -197,14 +214,29 @@ export default function AnalysisPanel({ decision, analyzing, analyzingId, onChoo
         <div className="flex-1 flex flex-col items-center justify-center gap-5 p-8 text-center">
           <Spinner />
           <div>
-            <p className="text-white font-semibold">Analyzing {analyzingId} failure</p>
-            <p className="text-slate-400 text-sm mt-2 leading-relaxed">
-              OR-Tools solving time-optimal<br />
-              and cost-optimal schedules…
-            </p>
-            <p className="text-purple-400/70 text-sm mt-2">
-              Claude assessing cascade risks…
-            </p>
+            {isRecovery ? (
+              <>
+                <p className="text-white font-semibold">{analyzingId} back online</p>
+                <p className="text-slate-400 text-sm mt-2 leading-relaxed">
+                  OR-Tools computing rebalance<br />
+                  and restore options…
+                </p>
+                <p className="text-purple-400/70 text-sm mt-2">
+                  Claude assessing recovery risk…
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="text-white font-semibold">Analyzing {analyzingId} failure</p>
+                <p className="text-slate-400 text-sm mt-2 leading-relaxed">
+                  OR-Tools solving time-optimal<br />
+                  and cost-optimal schedules…
+                </p>
+                <p className="text-purple-400/70 text-sm mt-2">
+                  Claude assessing cascade risks…
+                </p>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -233,8 +265,8 @@ export default function AnalysisPanel({ decision, analyzing, analyzingId, onChoo
                   decision.optionASla?.breachCount > 0 ? 'border-red-700/50' : 'border-blue-800/40'
                 }`}>
                   <div className="flex items-center gap-1.5">
-                    <span className="text-blue-400 font-black text-xs">⚡ A</span>
-                    <span className="text-xs font-bold text-blue-300">Fast Track</span>
+                    <span className="text-blue-400 font-black text-xs">{optionAIcon} A</span>
+                    <span className="text-xs font-bold text-blue-300">{optionALabel}</span>
                   </div>
                   {decision.optionAMetrics && (
                     <div className="border-t border-blue-800/30 pt-2">
@@ -251,8 +283,8 @@ export default function AnalysisPanel({ decision, analyzing, analyzingId, onChoo
                   decision.optionBSla?.breachCount > 0 ? 'border-red-700/50' : 'border-emerald-800/40'
                 }`}>
                   <div className="flex items-center gap-1.5">
-                    <span className="text-emerald-400 font-black text-xs">💰 B</span>
-                    <span className="text-xs font-bold text-emerald-300">Cost Optimal</span>
+                    <span className="text-emerald-400 font-black text-xs">{optionBIcon} B</span>
+                    <span className="text-xs font-bold text-emerald-300">{optionBLabel}</span>
                   </div>
                   {decision.optionBMetrics && (
                     <div className="border-t border-emerald-800/30 pt-2">
@@ -307,18 +339,18 @@ export default function AnalysisPanel({ decision, analyzing, analyzingId, onChoo
               <div className="pt-2 space-y-2.5">
                 <p className="text-xs text-slate-500 text-center">— Operator decision —</p>
                 <button
-                  onClick={() => onChoose('apply option A, the fast time-optimal schedule')}
+                  onClick={() => onChoose('apply option A')}
                   className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-500 active:bg-blue-700
                              text-white text-sm font-bold rounded-xl transition-all duration-150
                              shadow-lg shadow-blue-900/40">
-                  ⚡ Apply Option A — Fast Track
+                  {optionAIcon} Apply Option A — {optionALabel}
                 </button>
                 <button
-                  onClick={() => onChoose('apply option B, the cost-optimal schedule')}
+                  onClick={() => onChoose('apply option B')}
                   className="w-full py-3 px-4 bg-emerald-700 hover:bg-emerald-600 active:bg-emerald-800
                              text-white text-sm font-bold rounded-xl transition-all duration-150
                              shadow-lg shadow-emerald-900/40">
-                  💰 Apply Option B — Cost Optimal
+                  {optionBIcon} Apply Option B — {optionBLabel}
                 </button>
               </div>
 

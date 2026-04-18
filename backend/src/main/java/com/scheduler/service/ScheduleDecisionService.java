@@ -14,6 +14,7 @@ import com.scheduler.store.InMemoryStore;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,14 +47,15 @@ public class ScheduleDecisionService {
         this.store = store;
     }
 
-    // Sentinel value written to pendingSessionByMachine while analysis is running.
-    // The frontend polls this map and shows a spinner for any machine with this value.
+    // Sentinel values written to pendingSessionByMachine while analysis is running.
+    // Different values let the frontend distinguish failure vs recovery mode without
+    // relying on machine status, which may not have propagated via SSE yet.
     public static final String ANALYZING_SENTINEL = "ANALYZING";
+    public static final String ANALYZING_RECOVERY_SENTINEL = "ANALYZING_RECOVERY";
 
     public ScheduleDecisionResponse processFailure(String machineId) {
         log.info("Processing failure decision flow for machine {}", machineId);
 
-        // Write sentinel immediately so the UI can show "analyzing" state before Claude finishes.
         store.setPendingSession(machineId, ANALYZING_SENTINEL);
 
         // Clear stale sessions for other machines — this new analysis covers all currently-down
@@ -102,6 +104,124 @@ public class ScheduleDecisionService {
 
         log.info("Decision session {} created for machine {}", sessionId, machineId);
         return toResponse(session);
+    }
+
+    public ScheduleDecisionResponse processRecovery(String machineId) {
+        log.info("Processing recovery decision flow for machine {}", machineId);
+
+        // Clear any stale failure session for this machine before starting recovery analysis
+        sessionCache.entrySet().removeIf(entry -> {
+            if (machineId.equals(entry.getValue().getSchedulePair().getFailedMachineId())) {
+                log.info("Cleared stale failure session {} for {} (superseded by recovery)", entry.getKey(), machineId);
+                return true;
+            }
+            return false;
+        });
+
+        store.setPendingSession(machineId, ANALYZING_RECOVERY_SENTINEL);
+
+        ScheduleWithMetrics rebalance = cpSatSchedulingService.solveGlobalRebalance();
+        ScheduleWithMetrics restore   = buildRestoreSchedule(machineId);
+
+        log.info("Recovery options: rebalance makespan={}min, restore makespan={}min",
+                rebalance.getMetrics().getMakespan(), restore.getMetrics().getMakespan());
+
+        boolean claudeUnavailable = false;
+        String claudeAnalysis;
+        try {
+            claudeAnalysis = claudeAgentService.analyzeRecovery(machineId, rebalance, restore);
+        } catch (Exception e) {
+            log.warn("Claude API unavailable for recovery analysis: {}", e.getMessage());
+            claudeAnalysis = buildFallbackRecoveryAnalysis(machineId, rebalance, restore);
+            claudeUnavailable = true;
+        }
+
+        String[] parts = splitOptions(claudeAnalysis);
+
+        SlaBreachResult slpA = checkSlaBreaches(rebalance.getSchedule());
+        SlaBreachResult slpB = checkSlaBreaches(restore.getSchedule());
+
+        Schedule original = store.getCurrentSchedule();
+        String sessionId = UUID.randomUUID().toString();
+        SchedulePair pair = new SchedulePair(machineId, original,
+                rebalance.getSchedule(), restore.getSchedule());
+        DecisionSession session = new DecisionSession(sessionId, pair, claudeAnalysis,
+                parts[0], parts[1], rebalance.getMetrics(), restore.getMetrics(),
+                claudeUnavailable, slpA, slpB);
+        sessionCache.put(sessionId, session);
+        store.setPendingSession(machineId, sessionId);
+
+        log.info("Recovery session {} created for machine {}", sessionId, machineId);
+        return toResponse(session);
+    }
+
+    private ScheduleWithMetrics buildRestoreSchedule(String recoveredMachineId) {
+        Schedule current = store.getCurrentSchedule();
+        Map<String, List<Job>> currentAssignments = current != null ? current.getAssignments() : Map.of();
+
+        Map<String, List<Job>> newAssignments = new java.util.LinkedHashMap<>();
+        List<Job> jobsToRestore = new ArrayList<>();
+
+        for (Map.Entry<String, List<Job>> entry : currentAssignments.entrySet()) {
+            String machineId = entry.getKey();
+            if (machineId.equals(recoveredMachineId)) {
+                newAssignments.put(machineId, new ArrayList<>(entry.getValue()));
+            } else {
+                List<Job> stay = new ArrayList<>();
+                for (Job job : entry.getValue()) {
+                    if (job.getMachineId().equals(recoveredMachineId)) {
+                        jobsToRestore.add(job);
+                    } else {
+                        stay.add(job);
+                    }
+                }
+                if (!stay.isEmpty()) newAssignments.put(machineId, stay);
+            }
+        }
+        newAssignments.put(recoveredMachineId, jobsToRestore);
+
+        Map<String, Integer> loads = new java.util.HashMap<>();
+        for (Map.Entry<String, List<Job>> e : newAssignments.entrySet()) {
+            loads.put(e.getKey(), e.getValue().stream().mapToInt(Job::getDuration).sum());
+        }
+        int makespan = loads.values().stream().mapToInt(Integer::intValue).max().orElse(0);
+        // Count machines whose job list actually changed
+        int disrupted = (int) newAssignments.entrySet().stream()
+                .filter(e -> {
+                    List<Job> before = currentAssignments.getOrDefault(e.getKey(), List.of());
+                    return !e.getValue().equals(before);
+                })
+                .count();
+
+        return new ScheduleWithMetrics(
+                new Schedule(newAssignments),
+                new ScheduleMetrics(makespan, disrupted, loads));
+    }
+
+    private String buildFallbackRecoveryAnalysis(String machineId,
+                                                  ScheduleWithMetrics rebalance,
+                                                  ScheduleWithMetrics restore) {
+        ScheduleMetrics a = rebalance.getMetrics();
+        ScheduleMetrics b = restore.getMetrics();
+        String available = rebalance.getSchedule().getAssignments().keySet()
+                .stream().sorted().collect(java.util.stream.Collectors.joining(", "));
+        return String.format(
+                "SITUATION: Machine %s has come back online. OR-Tools CP-SAT has computed two "
+                + "recovery options for reintegrating it into the production schedule (%s).\n\n"
+                + "OPTION A (Rebalance): Full re-optimisation across all machines. "
+                + "Makespan: %d minutes, affecting %d machine(s). "
+                + "Redistributes all jobs optimally to minimise total completion time.\n\n"
+                + "OPTION B (Restore): Original jobs returned to %s. "
+                + "Makespan: %d minutes, affecting %d machine(s). "
+                + "Minimal disruption — other machines keep their current assignments.\n\n"
+                + "CASCADE RISK: Verify %s is fully stable before applying Option A. "
+                + "Option B is safer if the machine's recovery is uncertain.\n\n"
+                + "MY RECOMMENDATION: Choose Option B (Restore) for a conservative recovery. "
+                + "Choose Option A (Rebalance) if throughput is the priority and %s is confirmed stable.",
+                machineId, available,
+                a.getMakespan(), a.getDisruptedCount(),
+                machineId, b.getMakespan(), b.getDisruptedCount(),
+                machineId, machineId);
     }
 
     public Optional<ScheduleDecisionResponse> getSessionResponse(String sessionId) {
@@ -237,14 +357,38 @@ public class ScheduleDecisionService {
     }
 
     private String[] splitOptions(String analysis) {
-        java.util.regex.Matcher mA = java.util.regex.Pattern.compile(
-                "OPTION A[^:]*:\\s*([\\s\\S]*?)(?=\\n\\nOPTION B|\\nOPTION B|\\n\\nCASCADE|$)",
-                java.util.regex.Pattern.CASE_INSENSITIVE).matcher(analysis);
-        java.util.regex.Matcher mB = java.util.regex.Pattern.compile(
-                "OPTION B[^:]*:\\s*([\\s\\S]*?)(?=\\n\\nCASCADE|\\nCASCADE|\\n\\nMY RECOMMEND|$)",
-                java.util.regex.Pattern.CASE_INSENSITIVE).matcher(analysis);
-        String optionA = mA.find() ? mA.group(1).trim() : analysis;
-        String optionB = mB.find() ? mB.group(1).trim() : analysis;
-        return new String[]{optionA, optionB};
+        // Claude sometimes wraps headers in markdown bold (**OPTION B...**) which breaks
+        // regex lookaheads. Strip bold/italic markers first, then use indexOf boundaries
+        // to locate section content — much more robust than a single greedy pattern.
+        String text = analysis.replaceAll("\\*+", "");
+        String upper = text.toUpperCase();
+
+        int aIdx = upper.indexOf("OPTION A");
+        int bIdx = upper.indexOf("OPTION B");
+        int cIdx = upper.indexOf("CASCADE");
+        int rIdx = upper.indexOf("MY RECOMMENDATION");
+        if (rIdx < 0) rIdx = upper.indexOf("MY RECOMMEND");
+
+        String optionA = extractAfterColon(text, aIdx, bIdx > aIdx ? bIdx : -1);
+        String optionB = extractAfterColon(text, bIdx,
+                cIdx > bIdx ? cIdx : (rIdx > bIdx ? rIdx : -1));
+
+        return new String[]{
+            optionA != null ? optionA : analysis,
+            optionB != null ? optionB : analysis
+        };
+    }
+
+    private String extractAfterColon(String text, int sectionStart, int sectionEnd) {
+        if (sectionStart < 0) return null;
+        int colonIdx = text.indexOf(':', sectionStart);
+        // Colon should be on the header line — if it's too far away it's likely
+        // in the body text, not the header
+        if (colonIdx < 0 || colonIdx > sectionStart + 60) return null;
+        int contentStart = colonIdx + 1;
+        if (sectionEnd > contentStart) {
+            return text.substring(contentStart, sectionEnd).trim();
+        }
+        return text.substring(contentStart).trim();
     }
 }

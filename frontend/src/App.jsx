@@ -4,6 +4,7 @@ import GanttChart from './components/GanttChart'
 import AnalysisPanel from './components/AnalysisPanel'
 
 const ANALYZING = 'ANALYZING'
+const ANALYZING_RECOVERY = 'ANALYZING_RECOVERY'
 
 function Toast({ toast }) {
   if (!toast) return null
@@ -30,8 +31,8 @@ export default function App() {
   const [analyzingId, setAnalyzingId] = useState(null)
   const [panelOpen, setPanelOpen] = useState(false)
   const [toast, setToast] = useState(null)
-  // Job IDs that breach SLA in the currently active schedule
   const [activeSlaBreaches, setActiveSlaBreaches] = useState([])
+  const [analysisMode, setAnalysisMode] = useState('failure')
 
   const prevPendingRef = useRef({})
 
@@ -68,15 +69,17 @@ export default function App() {
       const prevVal = prev[machineId]
 
       // Machine just entered ANALYZING (triggered externally, not from this browser)
-      if (val === ANALYZING && !prevVal) {
+      if ((val === ANALYZING || val === ANALYZING_RECOVERY) && !prevVal) {
+        setAnalysisMode(val === ANALYZING_RECOVERY ? 'recovery' : 'failure')
         setAnalyzingId(machineId)
         setDecision(null)
         setPanelOpen(true)
         setActiveSlaBreaches([])
       }
 
-      // Machine completed analysis (ANALYZING → real session ID)
-      if (val && val !== ANALYZING && prevVal === ANALYZING) {
+      // Machine completed analysis (ANALYZING* → real session ID)
+      const prevWasAnalyzing = prevVal === ANALYZING || prevVal === ANALYZING_RECOVERY
+      if (val && val !== ANALYZING && val !== ANALYZING_RECOVERY && prevWasAnalyzing) {
         fetch(`/api/schedule/session/${val}`)
           .then(r => r.ok ? r.json() : null)
           .then(data => {
@@ -99,6 +102,7 @@ export default function App() {
     setDecision(null)
     setPanelOpen(true)
     setActiveSlaBreaches([])
+    setAnalysisMode('failure')
 
     try {
       await fetch(`/machines/${machineId}/down`, { method: 'POST' })
@@ -123,7 +127,7 @@ export default function App() {
       return
     }
     const sessionId = pendingSessions[machineId]
-    if (!sessionId || sessionId === ANALYZING) return
+    if (!sessionId || sessionId === ANALYZING || sessionId === ANALYZING_RECOVERY) return
     try {
       const res = await fetch(`/api/schedule/session/${sessionId}`)
       if (!res.ok) throw new Error(`${res.status}`)
@@ -162,6 +166,17 @@ export default function App() {
     }
   }
 
+  // Simulates the machine hardware resuming heartbeats (self-recovery).
+  // Single call — backend marks machine RUNNING and triggers async recovery analysis.
+  // SSE drives panel opening and decision loading via the pending effect above.
+  const simulateRecovery = async (machineId) => {
+    try {
+      await fetch(`/machines/${machineId}/self-recover`, { method: 'POST' })
+    } catch {
+      showToast('Failed to simulate self-recovery', 'error')
+    }
+  }
+
   const simulateDegradation = async (machineId) => {
     try {
       await fetch(`/machines/${machineId}/degrade`, { method: 'POST' })
@@ -176,7 +191,7 @@ export default function App() {
   // analyzing = backend is still running CP-SAT + Claude for the tracked machine,
   //             AND we don't already have a decision loaded (decision takes priority)
   const analyzing = !!analyzingId
-    && pendingSessions[analyzingId] === ANALYZING
+    && (pendingSessions[analyzingId] === ANALYZING || pendingSessions[analyzingId] === ANALYZING_RECOVERY)
     && !decision
 
   const downCount = machines.filter(m => m.status === 'DOWN').length
@@ -223,11 +238,12 @@ export default function App() {
               <MachineCard
                 key={m.id}
                 machine={m}
-                isAnalyzing={pendingSessions[m.id] === ANALYZING}
-                hasPendingDecision={pendingSessions[m.id] && pendingSessions[m.id] !== ANALYZING}
+                isAnalyzing={pendingSessions[m.id] === ANALYZING || pendingSessions[m.id] === ANALYZING_RECOVERY}
+                hasPendingDecision={pendingSessions[m.id] && pendingSessions[m.id] !== ANALYZING && pendingSessions[m.id] !== ANALYZING_RECOVERY}
                 onSimulate={simulateFailure}
                 onOpenPanel={openPanel}
                 onDegrade={simulateDegradation}
+                onRecover={simulateRecovery}
               />
             ))}
           </div>
@@ -284,6 +300,7 @@ export default function App() {
             analyzingId={analyzingId}
             onChoose={submitChoice}
             onDismiss={dismissPanel}
+            mode={analysisMode}
           />
         )}
       </div>

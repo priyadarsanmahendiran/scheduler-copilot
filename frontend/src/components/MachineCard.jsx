@@ -1,5 +1,5 @@
 export default function MachineCard({
-  machine, isAnalyzing, hasPendingDecision, onSimulate, onOpenPanel, onDegrade,
+  machine, isAnalyzing, hasPendingDecision, onSimulate, onOpenPanel, onDegrade, onRecover,
 }) {
   const isRunning = machine.status === 'RUNNING'
   const isDown    = machine.status === 'DOWN'
@@ -95,6 +95,17 @@ export default function MachineCard({
             transition-all duration-200 flex items-center justify-center gap-1.5 mb-2">
           <span>🤖</span>
           <span>View Claude Analysis</span>
+        </button>
+      )}
+
+      {/* Recovery button — only when machine is DOWN and not already being analyzed */}
+      {isDown && !isAnalyzing && !hasPendingDecision && (
+        <button
+          onClick={() => onRecover(machine.id)}
+          className="w-full text-xs py-2 px-3 rounded-lg border border-green-700/50 text-green-500/80
+            hover:border-green-500/70 hover:text-green-400 hover:bg-green-950/20
+            transition-all duration-200 mb-2">
+          ↑ Bring Online
         </button>
       )}
 

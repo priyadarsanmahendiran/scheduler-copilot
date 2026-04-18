@@ -9,6 +9,7 @@ import com.google.ortools.sat.IntVar;
 import com.google.ortools.sat.LinearExpr;
 import com.google.ortools.sat.LinearExprBuilder;
 import com.scheduler.model.Job;
+import com.scheduler.model.Machine;
 import com.scheduler.model.Schedule;
 import com.scheduler.model.ScheduleMetrics;
 import com.scheduler.model.ScheduleWithMetrics;
@@ -53,7 +54,43 @@ public class CpSatSchedulingService {
     }
 
     public ScheduleWithMetrics solveTimeOptimal(String triggeringMachineId) {
-        SolverInputs inputs = buildInputs(triggeringMachineId);
+        return minimizeMakespan(buildInputs(triggeringMachineId));
+    }
+
+    public ScheduleWithMetrics solveGlobalRebalance() {
+        Schedule current = store.getCurrentSchedule();
+        Map<String, List<Job>> assignments = current != null ? current.getAssignments() : Map.of();
+
+        List<Job> allJobs = assignments.values().stream()
+                .flatMap(List::stream)
+                .collect(Collectors.toList());
+
+        List<String> availableMachines = store.getMachines().values().stream()
+                .filter(m -> "RUNNING".equals(m.getStatus()))
+                .map(Machine::getId)
+                .sorted()
+                .collect(Collectors.toList());
+
+        if (allJobs.isEmpty() || availableMachines.isEmpty()) {
+            Map<String, Integer> loads = new LinkedHashMap<>();
+            Map<String, List<Job>> emptyAssignments = new LinkedHashMap<>();
+            for (String m : availableMachines) { loads.put(m, 0); emptyAssignments.put(m, new ArrayList<>()); }
+            return new ScheduleWithMetrics(new Schedule(emptyAssignments), new ScheduleMetrics(0, 0, loads));
+        }
+
+        // Clean-slate reoptimization: no existing load on any machine
+        Map<String, Integer> existingLoads = new LinkedHashMap<>();
+        Map<String, List<Job>> existingAssignments = new LinkedHashMap<>();
+        for (String m : availableMachines) {
+            existingLoads.put(m, 0);
+            existingAssignments.put(m, new ArrayList<>());
+        }
+
+        log.info("Recovery rebalance: {} jobs across {} machines", allJobs.size(), availableMachines.size());
+        return minimizeMakespan(new SolverInputs(allJobs, availableMachines, existingLoads, existingAssignments));
+    }
+
+    private ScheduleWithMetrics minimizeMakespan(SolverInputs inputs) {
         if (inputs.jobs.isEmpty()) {
             return emptyResult(inputs);
         }
@@ -94,7 +131,7 @@ public class CpSatSchedulingService {
         if (status == CpSolverStatus.OPTIMAL || status == CpSolverStatus.FEASIBLE) {
             return extractResult(solver, x, inputs, (int) solver.objectiveValue());
         }
-        log.warn("CP-SAT time-optimal solver returned {}, falling back to round-robin", status);
+        log.warn("CP-SAT minimize-makespan solver returned {}, falling back", status);
         return fallback(inputs);
     }
 

@@ -65,6 +65,15 @@ public class ScheduleDecisionController {
                 .orElse(ResponseEntity.notFound().build());
     }
 
+    @PostMapping("/recovery")
+    public ResponseEntity<ScheduleDecisionResponse> processRecovery(
+            @RequestBody MachineFailureRequest request) {
+        if (request.getMachineId() == null || request.getMachineId().isBlank()) {
+            return ResponseEntity.badRequest().build();
+        }
+        return ResponseEntity.ok(scheduleDecisionService.processRecovery(request.getMachineId()));
+    }
+
     @GetMapping("/pending")
     public ResponseEntity<Map<String, String>> getPendingSessions() {
         return ResponseEntity.ok(store.getPendingSessionByMachine());

@@ -115,6 +115,67 @@ public class ClaudeAgentService {
         return "Analysis unavailable — agent exceeded iteration limit.";
     }
 
+    public String analyzeRecovery(String recoveredMachineId,
+                                   ScheduleWithMetrics rebalance,
+                                   ScheduleWithMetrics restore) {
+        // Reuse the same tool loop but pass recovery options as timeOpt/costOpt.
+        // The recovery-specific user prompt tells Claude what each option represents.
+        AnalysisContext ctx = new AnalysisContext(recoveredMachineId, rebalance, restore);
+        List<Tool> tools = buildTools();
+
+        List<MessageParam> messages = new ArrayList<>();
+        messages.add(MessageParam.builder()
+                .role(MessageParam.Role.USER)
+                .content(buildRecoveryPrompt(recoveredMachineId))
+                .build());
+
+        for (int iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
+            MessageCreateParams.Builder paramsBuilder = MessageCreateParams.builder()
+                    .model(MODEL)
+                    .maxTokens(MAX_TOKENS)
+                    .system(RECOVERY_SYSTEM_PROMPT)
+                    .messages(messages);
+            for (Tool tool : tools) paramsBuilder.addTool(tool);
+            MessageCreateParams params = paramsBuilder.build();
+
+            Message response = anthropicClient.getSdkClient().messages().create(params);
+            log.debug("Claude recovery iteration {}: stopReason={}", iteration, response.stopReason());
+
+            if (response.stopReason().map(StopReason.END_TURN::equals).orElse(false)) {
+                return extractText(response);
+            }
+            if (!response.stopReason().map(StopReason.TOOL_USE::equals).orElse(false)) {
+                return extractText(response);
+            }
+
+            List<ContentBlockParam> assistantBlocks = toContentBlockParams(response.content());
+            messages.add(MessageParam.builder()
+                    .role(MessageParam.Role.ASSISTANT)
+                    .contentOfBlockParams(assistantBlocks)
+                    .build());
+
+            List<ContentBlockParam> toolResults = new ArrayList<>();
+            for (ContentBlock block : response.content()) {
+                if (block.isToolUse()) {
+                    ToolUseBlock toolUse = block.asToolUse();
+                    String result = executeTool(toolUse, ctx);
+                    toolResults.add(ContentBlockParam.ofToolResult(
+                            ToolResultBlockParam.builder()
+                                    .toolUseId(toolUse.id())
+                                    .content(result)
+                                    .build()));
+                }
+            }
+            messages.add(MessageParam.builder()
+                    .role(MessageParam.Role.USER)
+                    .contentOfBlockParams(toolResults)
+                    .build());
+        }
+
+        log.warn("Claude recovery agent hit max iterations for machine {}", recoveredMachineId);
+        return "Recovery analysis unavailable — agent exceeded iteration limit.";
+    }
+
     public String chat(DecisionSession session, String userMessage) {
         List<MessageParam> messages = new ArrayList<>();
 
@@ -355,12 +416,39 @@ public class ClaudeAgentService {
         );
     }
 
+    private String buildRecoveryPrompt(String recoveredMachineId) {
+        return String.format(
+                "Machine %s has come back online after a failure. Use the available tools to:\n"
+                + "1. Check all machine statuses and current loads (post-failure schedule)\n"
+                + "2. Retrieve the rebalance option (get_time_optimal_schedule — full re-optimisation)\n"
+                + "3. Retrieve the restore option (get_cost_optimal_schedule — original jobs returned)\n"
+                + "4. Assess cascade risk for the recovered machine\n"
+                + "5. Provide a structured analysis in this EXACT format:\n\n"
+                + "SITUATION: [What failed, how jobs were redistributed, and that %s is now recovered]\n\n"
+                + "OPTION A (Rebalance): [Full re-optimisation across all machines — makespan, "
+                + "which machines change, key tradeoffs]\n\n"
+                + "OPTION B (Restore): [Original jobs returned to %s — makespan, "
+                + "minimal disruption, key tradeoffs]\n\n"
+                + "CASCADE RISK: [Is %s stable enough to take load? Any overload risk on either option?]\n\n"
+                + "MY RECOMMENDATION: [Which option and why — consider whether rebalancing is worth "
+                + "the disruption vs. simply restoring the original assignment]",
+                recoveredMachineId, recoveredMachineId, recoveredMachineId, recoveredMachineId);
+    }
+
     private static final String SYSTEM_PROMPT =
             "You are an expert manufacturing scheduling analyst. Your role is to analyze machine failure "
             + "scenarios and present clear, actionable rescheduling options to human operators. "
             + "You have access to OR-Tools CP-SAT optimized schedules — trust these as mathematically "
             + "optimal. Focus your analysis on cascade risks, operational tradeoffs, and a clear "
             + "recommendation. Be concise and precise.";
+
+    private static final String RECOVERY_SYSTEM_PROMPT =
+            "You are an expert manufacturing scheduling analyst. A previously failed machine has come "
+            + "back online. Your role is to evaluate two recovery options and advise the operator: "
+            + "OPTION A (Rebalance) uses OR-Tools to fully re-optimise across all machines for maximum "
+            + "throughput; OPTION B (Restore) simply returns the recovered machine's original jobs to it "
+            + "with minimal disruption. Consider machine stability, disruption cost, and SLA impact. "
+            + "Be concise and precise.";
 
     private static class AnalysisContext {
         final String failedMachineId;

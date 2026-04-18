@@ -47,13 +47,13 @@ export default function App() {
     const es = new EventSource('/api/events')
 
     es.addEventListener('machines', e => {
-      try { setMachines(JSON.parse(e.data)) } catch {}
+      try { setMachines(JSON.parse(e.data)) } catch { }
     })
     es.addEventListener('schedule', e => {
-      try { setSchedule(JSON.parse(e.data)) } catch {}
+      try { setSchedule(JSON.parse(e.data)) } catch { }
     })
     es.addEventListener('pending', e => {
-      try { setPendingSessions(JSON.parse(e.data)) } catch {}
+      try { setPendingSessions(JSON.parse(e.data)) } catch { }
     })
 
     return () => es.close()
@@ -86,10 +86,11 @@ export default function App() {
             if (data) {
               setDecision(data)
               setAnalyzingId(machineId)
+              setAnalysisMode(data.sessionType === 'recovery' ? 'recovery' : 'failure')
               setPanelOpen(true)
             }
           })
-          .catch(() => {})
+          .catch(() => { })
       }
     }
   }, [pendingSessions])
@@ -106,16 +107,14 @@ export default function App() {
 
     try {
       await fetch(`/machines/${machineId}/down`, { method: 'POST' })
-
-      const res = await fetch('/api/schedule/failure', {
+      // Fire-and-forget — SSE drives panel opening and decision loading
+      fetch('/api/schedule/failure', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ machineId }),
-      })
-      if (!res.ok) throw new Error(`Analysis failed (${res.status})`)
-      setDecision(await res.json())
+      }).catch(() => { })
     } catch (e) {
-      showToast(e.message || 'Failed to analyze failure', 'error')
+      showToast(e.message || 'Failed to trigger failure', 'error')
       setPanelOpen(false)
       setAnalyzingId(null)
     }
@@ -134,6 +133,7 @@ export default function App() {
       const data = await res.json()
       setDecision(data)
       setAnalyzingId(machineId)
+      setAnalysisMode(data.sessionType === 'recovery' ? 'recovery' : 'failure')
       setPanelOpen(true)
     } catch (e) {
       showToast('Failed to load analysis', 'error')
@@ -197,6 +197,18 @@ export default function App() {
   const downCount = machines.filter(m => m.status === 'DOWN').length
   const systemOk = downCount === 0
 
+  // Block "Bring Online" while a failure rescheduling decision is unresolved.
+  // Operator must choose a schedule before recovering machines, otherwise recovery
+  // analyses would be computed against a stale/unchosen schedule.
+  const failureDecisionPending =
+    Object.values(pendingSessions).some(v => v === ANALYZING) ||
+    (decision?.sessionType === 'failure' && !!decision?.sessionId)
+
+  const recoveryDecisionPending =
+    Object.values(pendingSessions).some(v => v === ANALYZING_RECOVERY) ||
+    (decision?.sessionType === 'recovery' && !!decision?.sessionId)
+
+
   return (
     <div className="h-screen bg-slate-950 text-slate-100 flex flex-col overflow-hidden">
       {/* Header */}
@@ -234,12 +246,17 @@ export default function App() {
             {machines.length === 0 && (
               <p className="text-xs text-slate-600 text-center py-8">Connecting to backend…</p>
             )}
-            {machines.map(m => (
+            {[...machines].sort((a, b) => {
+              const n = s => parseInt(s.replace(/\D/g, ''), 10) || 0
+              return n(a.id) - n(b.id)
+            }).map(m => (
               <MachineCard
                 key={m.id}
                 machine={m}
                 isAnalyzing={pendingSessions[m.id] === ANALYZING || pendingSessions[m.id] === ANALYZING_RECOVERY}
                 hasPendingDecision={pendingSessions[m.id] && pendingSessions[m.id] !== ANALYZING && pendingSessions[m.id] !== ANALYZING_RECOVERY}
+                recoverBlocked={failureDecisionPending}
+                actionBlocked={recoveryDecisionPending}
                 onSimulate={simulateFailure}
                 onOpenPanel={openPanel}
                 onDegrade={simulateDegradation}
@@ -280,10 +297,14 @@ export default function App() {
                 </p>
               )}
             </div>
-            <span className="text-xs text-slate-600">↻ Live — updates every 2s</span>
+            <span className="text-xs text-slate-600">↻ Live</span>
           </div>
 
-          <GanttChart schedule={schedule} failedMachineId={analyzingId} slaBreaches={activeSlaBreaches} />
+          <GanttChart
+            schedule={schedule}
+            failedMachineIds={new Set(machines.filter(m => m.status === 'DOWN').map(m => m.id))}
+            slaBreaches={activeSlaBreaches}
+          />
 
           {!schedule && (
             <div className="mt-4 text-center text-slate-600 text-sm">

@@ -7,23 +7,25 @@ function parseAnalysis(text) {
   const clean = text.replace(/\*+/g, '')
   const upper = clean.toUpperCase()
 
-  const extractBetween = (startMarker, ...endMarkers) => {
+  const extractSection = (startMarker, ...endMarkers) => {
     const start = upper.indexOf(startMarker)
     if (start < 0) return ''
+    // Only use a colon as delimiter if it's on the header line itself — not in body text
+    const lineEnd = clean.indexOf('\n', start)
+    const headerEnd = lineEnd >= 0 ? lineEnd : clean.length
     const colonIdx = clean.indexOf(':', start)
-    if (colonIdx < 0 || colonIdx > start + 60) return ''
-    const contentStart = colonIdx + 1
+    const contentStart = (colonIdx >= 0 && colonIdx < headerEnd) ? colonIdx + 1 : headerEnd + 1
     const end = endMarkers.map(m => upper.indexOf(m, contentStart)).filter(i => i > contentStart)
     const cutoff = end.length ? Math.min(...end) : -1
     return (cutoff > 0 ? clean.slice(contentStart, cutoff) : clean.slice(contentStart)).trim()
   }
 
   return {
-    situation:      extractBetween('SITUATION:', 'OPTION A'),
-    optionA:        extractBetween('OPTION A', 'OPTION B', 'CASCADE', 'MY RECOMMEND'),
-    optionB:        extractBetween('OPTION B', 'CASCADE', 'MY RECOMMEND'),
-    cascade:        extractBetween('CASCADE', 'MY RECOMMEND'),
-    recommendation: extractBetween('MY RECOMMENDATION:') || extractBetween('MY RECOMMEND:'),
+    situation:      extractSection('SITUATION:', 'OPTION A'),
+    optionA:        extractSection('OPTION A', 'OPTION B', 'CASCADE', 'MY RECOMMEND'),
+    optionB:        extractSection('OPTION B', 'CASCADE', 'MY RECOMMEND'),
+    cascade:        extractSection('CASCADE', 'MY RECOMMEND'),
+    recommendation: extractSection('MY RECOMMENDATION:') || extractSection('MY RECOMMEND:'),
   }
 }
 

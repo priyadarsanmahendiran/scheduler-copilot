@@ -58,18 +58,17 @@ public class ScheduleDecisionService {
 
         store.setPendingSession(machineId, ANALYZING_SENTINEL);
 
-        // Clear stale sessions for other machines — this new analysis covers all currently-down
-        // machines together, so any earlier single-machine session is now superseded.
-        sessionCache.entrySet().removeIf(entry -> {
-            String staleMachine = entry.getValue().getSchedulePair().getFailedMachineId();
-            if (!machineId.equals(staleMachine)) {
-                store.clearPendingSession(staleMachine);
-                log.info("Cleared stale session {} for {} (superseded by {} analysis)",
-                        entry.getKey(), staleMachine, machineId);
-                return true;
-            }
-            return false;
-        });
+        // Invalidate every other machine's pending state — both completed sessions AND
+        // in-flight ANALYZING sentinels. Any concurrent processFailure thread for another
+        // machine will see its sentinel was cleared and will discard its result at write time.
+        new java.util.ArrayList<>(store.getPendingSessionByMachine().keySet()).stream()
+                .filter(m -> !machineId.equals(m))
+                .forEach(m -> {
+                    store.clearPendingSession(m);
+                    log.info("Cleared pending state for {} (superseded by {} analysis)", m, machineId);
+                });
+        sessionCache.entrySet().removeIf(entry ->
+                !machineId.equals(entry.getValue().getSchedulePair().getFailedMachineId()));
 
         ScheduleWithMetrics timeOpt = cpSatSchedulingService.solveTimeOptimal(machineId);
         ScheduleWithMetrics costOpt = cpSatSchedulingService.solveCostOptimal(machineId);
@@ -98,7 +97,16 @@ public class ScheduleDecisionService {
                 timeOpt.getSchedule(), costOpt.getSchedule());
         DecisionSession session = new DecisionSession(sessionId, pair, claudeAnalysis,
                 parts[0], parts[1], timeOpt.getMetrics(), costOpt.getMetrics(),
-                claudeUnavailable, slpA, slpB);
+                claudeUnavailable, slpA, slpB, "failure");
+
+        // Guard: a newer failure was triggered while we were computing. Our schedule was
+        // solved without all currently-down machines — persisting it would show invalid
+        // redistribution to machines that are also now offline. Discard silently.
+        if (!ANALYZING_SENTINEL.equals(store.getPendingSession(machineId))) {
+            log.info("Analysis for {} superseded by newer failure, discarding stale session", machineId);
+            return toResponse(session);
+        }
+
         sessionCache.put(sessionId, session);
         store.setPendingSession(machineId, sessionId);
 
@@ -109,10 +117,33 @@ public class ScheduleDecisionService {
     public ScheduleDecisionResponse processRecovery(String machineId) {
         log.info("Processing recovery decision flow for machine {}", machineId);
 
-        // Clear any stale failure session for this machine before starting recovery analysis
+        // Clear stale recovery sessions for ALL other machines. Those analyses were
+        // computed before this machine came back online, so they don't reflect the full
+        // set of available machines. Any operator action on them would reschedule jobs
+        // onto an incomplete machine set — producing conflicts.
+        new java.util.ArrayList<>(store.getPendingSessionByMachine().keySet()).stream()
+                .filter(m -> !machineId.equals(m))
+                .forEach(m -> {
+                    String pending = store.getPendingSession(m);
+                    if (pending == null) return;
+                    if (ANALYZING_RECOVERY_SENTINEL.equals(pending)) {
+                        store.clearPendingSession(m);
+                        log.info("Cleared in-flight recovery for {} (superseded by {} recovery)", m, machineId);
+                    } else {
+                        DecisionSession s = sessionCache.get(pending);
+                        if (s != null && "recovery".equals(s.getSessionType())) {
+                            sessionCache.remove(pending);
+                            store.clearPendingSession(m);
+                            log.info("Cleared stale recovery session {} for {} (superseded by {} recovery)",
+                                    pending, m, machineId);
+                        }
+                    }
+                });
+
+        // Clear any existing session for this machine (stale failure or prior recovery)
         sessionCache.entrySet().removeIf(entry -> {
             if (machineId.equals(entry.getValue().getSchedulePair().getFailedMachineId())) {
-                log.info("Cleared stale failure session {} for {} (superseded by recovery)", entry.getKey(), machineId);
+                log.info("Cleared stale session {} for {} (superseded by recovery)", entry.getKey(), machineId);
                 return true;
             }
             return false;
@@ -147,7 +178,15 @@ public class ScheduleDecisionService {
                 rebalance.getSchedule(), restore.getSchedule());
         DecisionSession session = new DecisionSession(sessionId, pair, claudeAnalysis,
                 parts[0], parts[1], rebalance.getMetrics(), restore.getMetrics(),
-                claudeUnavailable, slpA, slpB);
+                claudeUnavailable, slpA, slpB, "recovery");
+
+        // Write-time guard: a later recovery cleared our sentinel while we were computing.
+        // Our schedule doesn't account for all recovered machines — discard it.
+        if (!ANALYZING_RECOVERY_SENTINEL.equals(store.getPendingSession(machineId))) {
+            log.info("Recovery analysis for {} superseded, discarding stale session", machineId);
+            return toResponse(session);
+        }
+
         sessionCache.put(sessionId, session);
         store.setPendingSession(machineId, sessionId);
 
@@ -309,7 +348,8 @@ public class ScheduleDecisionService {
                 session.getCreatedAt() + SESSION_TTL_MS,
                 session.isClaudeUnavailable(),
                 session.getOptionASla(),
-                session.getOptionBSla());
+                session.getOptionBSla(),
+                session.getSessionType());
     }
 
     private SlaBreachResult checkSlaBreaches(Schedule schedule) {
@@ -357,9 +397,6 @@ public class ScheduleDecisionService {
     }
 
     private String[] splitOptions(String analysis) {
-        // Claude sometimes wraps headers in markdown bold (**OPTION B...**) which breaks
-        // regex lookaheads. Strip bold/italic markers first, then use indexOf boundaries
-        // to locate section content — much more robust than a single greedy pattern.
         String text = analysis.replaceAll("\\*+", "");
         String upper = text.toUpperCase();
 
@@ -369,8 +406,8 @@ public class ScheduleDecisionService {
         int rIdx = upper.indexOf("MY RECOMMENDATION");
         if (rIdx < 0) rIdx = upper.indexOf("MY RECOMMEND");
 
-        String optionA = extractAfterColon(text, aIdx, bIdx > aIdx ? bIdx : -1);
-        String optionB = extractAfterColon(text, bIdx,
+        String optionA = extractSection(text, aIdx, bIdx > aIdx ? bIdx : -1);
+        String optionB = extractSection(text, bIdx,
                 cIdx > bIdx ? cIdx : (rIdx > bIdx ? rIdx : -1));
 
         return new String[]{
@@ -379,13 +416,21 @@ public class ScheduleDecisionService {
         };
     }
 
-    private String extractAfterColon(String text, int sectionStart, int sectionEnd) {
+    private String extractSection(String text, int sectionStart, int sectionEnd) {
         if (sectionStart < 0) return null;
+        // Find end of header line
+        int lineEnd = text.indexOf('\n', sectionStart);
+        if (lineEnd < 0) lineEnd = text.length();
+        // Only treat a colon as a header delimiter if it appears on the header line itself.
+        // A colon in the body text (e.g. "Makespan: 120min") must not be used as the split point.
         int colonIdx = text.indexOf(':', sectionStart);
-        // Colon should be on the header line — if it's too far away it's likely
-        // in the body text, not the header
-        if (colonIdx < 0 || colonIdx > sectionStart + 60) return null;
-        int contentStart = colonIdx + 1;
+        int contentStart = (colonIdx >= 0 && colonIdx < lineEnd) ? colonIdx + 1 : lineEnd + 1;
+        // Skip blank lines between header and content
+        while (contentStart < text.length()
+                && (text.charAt(contentStart) == '\n' || text.charAt(contentStart) == '\r')) {
+            contentStart++;
+        }
+        if (contentStart >= text.length()) return null;
         if (sectionEnd > contentStart) {
             return text.substring(contentStart, sectionEnd).trim();
         }

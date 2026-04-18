@@ -16,6 +16,7 @@ public class DecisionSession {
     private boolean claudeUnavailable;
     private SlaBreachResult optionASla;
     private SlaBreachResult optionBSla;
+    private String sessionType; // "failure" or "recovery"
     private final List<ChatMessage> chatHistory = Collections.synchronizedList(new ArrayList<>());
 
     public DecisionSession() {}
@@ -24,7 +25,8 @@ public class DecisionSession {
                            String claudeAnalysis, String optionAText, String optionBText,
                            ScheduleMetrics optionAMetrics, ScheduleMetrics optionBMetrics,
                            boolean claudeUnavailable,
-                           SlaBreachResult optionASla, SlaBreachResult optionBSla) {
+                           SlaBreachResult optionASla, SlaBreachResult optionBSla,
+                           String sessionType) {
         this.sessionId = sessionId;
         this.schedulePair = schedulePair;
         this.claudeAnalysis = claudeAnalysis;
@@ -35,6 +37,7 @@ public class DecisionSession {
         this.claudeUnavailable = claudeUnavailable;
         this.optionASla = optionASla;
         this.optionBSla = optionBSla;
+        this.sessionType = sessionType;
         this.createdAt = System.currentTimeMillis();
     }
 
@@ -70,6 +73,9 @@ public class DecisionSession {
 
     public SlaBreachResult getOptionBSla() { return optionBSla; }
     public void setOptionBSla(SlaBreachResult optionBSla) { this.optionBSla = optionBSla; }
+
+    public String getSessionType() { return sessionType; }
+    public void setSessionType(String sessionType) { this.sessionType = sessionType; }
 
     public List<ChatMessage> getChatHistory() { return chatHistory; }
 

@@ -79,7 +79,7 @@ function GanttRow({ machineId, bars, isFailed, label, slaBreachSet }) {
   )
 }
 
-export default function GanttChart({ schedule, failedMachineId, title, highlightColor, slaBreaches }) {
+export default function GanttChart({ schedule, failedMachineId, failedMachineIds, title, highlightColor, slaBreaches }) {
   if (!schedule?.assignments || Object.keys(schedule.assignments).length === 0) {
     return (
       <div className={`rounded-xl border p-8 flex items-center justify-center text-slate-500 text-sm ${
@@ -94,7 +94,8 @@ export default function GanttChart({ schedule, failedMachineId, title, highlight
 
   const slaBreachSet = slaBreaches?.length ? new Set(slaBreaches) : null
   const { bars, maxTime } = computeBars(schedule.assignments)
-  const machines = Object.keys(schedule.assignments).sort()
+  const numId = s => parseInt(s.replace(/\D/g, ''), 10) || 0
+  const machines = Object.keys(schedule.assignments).sort((a, b) => numId(a) - numId(b))
 
   const tickCount = 5
   const rawInterval = maxTime / tickCount
@@ -151,7 +152,7 @@ export default function GanttChart({ schedule, failedMachineId, title, highlight
             key={machineId}
             machineId={machineId}
             bars={bars[machineId] || []}
-            isFailed={machineId === failedMachineId}
+            isFailed={failedMachineIds ? failedMachineIds.has(machineId) : machineId === failedMachineId}
             slaBreachSet={slaBreachSet}
           />
         ))}

@@ -45,6 +45,7 @@ public class MachineService {
     public void markAsDown(String id) {
         Machine machine = store.getMachines().get(id);
         if (machine != null) {
+            machine.setStatus("DOWN");
             machine.setHeartbeatBlocked(true);
             machine.setRiskLevel(null);
             machine.setRiskReason(null);

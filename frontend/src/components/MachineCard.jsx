@@ -1,5 +1,5 @@
 export default function MachineCard({
-  machine, isAnalyzing, hasPendingDecision, onSimulate, onOpenPanel, onDegrade, onRecover,
+  machine, isAnalyzing, hasPendingDecision, recoverBlocked, actionBlocked, onSimulate, onOpenPanel, onDegrade, onRecover,
 }) {
   const isRunning = machine.status === 'RUNNING'
   const isDown    = machine.status === 'DOWN'
@@ -100,35 +100,58 @@ export default function MachineCard({
 
       {/* Recovery button — only when machine is DOWN and not already being analyzed */}
       {isDown && !isAnalyzing && !hasPendingDecision && (
-        <button
-          onClick={() => onRecover(machine.id)}
-          className="w-full text-xs py-2 px-3 rounded-lg border border-green-700/50 text-green-500/80
-            hover:border-green-500/70 hover:text-green-400 hover:bg-green-950/20
-            transition-all duration-200 mb-2">
-          ↑ Bring Online
-        </button>
+        recoverBlocked ? (
+          <div className="mb-2">
+            <div className="w-full text-xs py-2 px-3 rounded-lg border border-slate-700/50
+              text-slate-600 bg-slate-800/30 cursor-not-allowed text-center">
+              ↑ Bring Online
+            </div>
+            <p className="text-[10px] text-slate-600 text-center mt-1">
+              Resolve rescheduling first
+            </p>
+          </div>
+        ) : (
+          <button
+            onClick={() => onRecover(machine.id)}
+            className="w-full text-xs py-2 px-3 rounded-lg border border-green-700/50 text-green-500/80
+              hover:border-green-500/70 hover:text-green-400 hover:bg-green-950/20
+              transition-all duration-200 mb-2">
+            ↑ Bring Online
+          </button>
+        )
       )}
 
       {/* Action buttons — only when machine is in a stable running state */}
       {isRunning && !isAnalyzing && !hasPendingDecision && (
-        <div className="space-y-2">
-          {/* Show degrade button only if not already at risk */}
-          {!hasRisk && (
+        actionBlocked ? (
+          <div>
+            <div className="w-full text-xs py-2 px-3 rounded-lg border border-slate-700/50
+              text-slate-600 bg-slate-800/30 cursor-not-allowed text-center mb-1">
+              ✖ Simulate Failure
+            </div>
+            <p className="text-[10px] text-slate-600 text-center">
+              Resolve recovery first
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {!hasRisk && (
+              <button
+                onClick={() => onDegrade(machine.id)}
+                className="w-full text-xs py-2 px-3 rounded-lg border border-yellow-700/50 text-yellow-500/80
+                  hover:border-yellow-500/70 hover:text-yellow-400 hover:bg-yellow-950/20
+                  transition-all duration-200">
+                ⚡ Simulate Degradation
+              </button>
+            )}
             <button
-              onClick={() => onDegrade(machine.id)}
-              className="w-full text-xs py-2 px-3 rounded-lg border border-yellow-700/50 text-yellow-500/80
-                hover:border-yellow-500/70 hover:text-yellow-400 hover:bg-yellow-950/20
-                transition-all duration-200">
-              ⚡ Simulate Degradation
+              onClick={() => onSimulate(machine.id)}
+              className="w-full text-xs py-2 px-3 rounded-lg border border-slate-600 text-slate-400
+                hover:border-red-500/70 hover:text-red-400 hover:bg-red-950/20 transition-all duration-200">
+              ✖ Simulate Failure
             </button>
-          )}
-          <button
-            onClick={() => onSimulate(machine.id)}
-            className="w-full text-xs py-2 px-3 rounded-lg border border-slate-600 text-slate-400
-              hover:border-red-500/70 hover:text-red-400 hover:bg-red-950/20 transition-all duration-200">
-            ✖ Simulate Failure
-          </button>
-        </div>
+          </div>
+        )
       )}
     </div>
   )

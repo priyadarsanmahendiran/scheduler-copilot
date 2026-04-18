@@ -13,6 +13,7 @@ public class ScheduleDecisionResponse {
     private boolean claudeUnavailable;
     private SlaBreachResult optionASla;
     private SlaBreachResult optionBSla;
+    private String sessionType; // "failure" or "recovery"
 
     public ScheduleDecisionResponse() {}
 
@@ -21,7 +22,8 @@ public class ScheduleDecisionResponse {
                                     Schedule optionASchedule, Schedule optionBSchedule,
                                     ScheduleMetrics optionAMetrics, ScheduleMetrics optionBMetrics,
                                     long expiresAt, boolean claudeUnavailable,
-                                    SlaBreachResult optionASla, SlaBreachResult optionBSla) {
+                                    SlaBreachResult optionASla, SlaBreachResult optionBSla,
+                                    String sessionType) {
         this.sessionId = sessionId;
         this.claudeAnalysis = claudeAnalysis;
         this.optionAText = optionAText;
@@ -34,6 +36,7 @@ public class ScheduleDecisionResponse {
         this.claudeUnavailable = claudeUnavailable;
         this.optionASla = optionASla;
         this.optionBSla = optionBSla;
+        this.sessionType = sessionType;
     }
 
     public String getSessionId() { return sessionId; }
@@ -71,4 +74,7 @@ public class ScheduleDecisionResponse {
 
     public SlaBreachResult getOptionBSla() { return optionBSla; }
     public void setOptionBSla(SlaBreachResult optionBSla) { this.optionBSla = optionBSla; }
+
+    public String getSessionType() { return sessionType; }
+    public void setSessionType(String sessionType) { this.sessionType = sessionType; }
 }

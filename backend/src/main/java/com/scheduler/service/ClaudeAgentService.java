@@ -354,18 +354,31 @@ public class ClaudeAgentService {
     }
 
     private String buildUserPrompt(String failedMachineId) {
-        return String.format(
-                "Machine %s has failed. Use the available tools to:\n" +
+        List<String> downMachines = store.getMachines().values().stream()
+                .filter(m -> "DOWN".equals(m.getStatus()))
+                .map(Machine::getId)
+                .sorted()
+                .collect(Collectors.toList());
+
+        String situationContext;
+        if (downMachines.size() > 1) {
+            situationContext = String.format(
+                    "%d machines are currently offline: %s (latest failure: %s).",
+                    downMachines.size(), String.join(", ", downMachines), failedMachineId);
+        } else {
+            situationContext = String.format("Machine %s has failed.", failedMachineId);
+        }
+
+        return situationContext + " Use the available tools to:\n" +
                 "1. Check all machine statuses and loads\n" +
                 "2. Retrieve both rescheduling options from OR-Tools\n" +
                 "3. Check cascade risk for heavily loaded machines\n" +
                 "4. Provide a structured analysis in this EXACT format:\n\n" +
-                "SITUATION: [1-2 sentences on what failed and immediate impact]\n\n" +
+                "SITUATION: [1-2 sentences on what failed and immediate impact, naming all offline machines]\n\n" +
                 "OPTION A (Fast): [time-optimal schedule summary — makespan, which machines, key tradeoffs]\n\n" +
                 "OPTION B (Cheap): [cost-optimal schedule summary — disruption count, which machines, key tradeoffs]\n\n" +
                 "CASCADE RISK: [specific risk assessment for each option]\n\n" +
-                "MY RECOMMENDATION: [which option you recommend and why, in 1-2 sentences]",
-                failedMachineId);
+                "MY RECOMMENDATION: [which option you recommend and why, in 1-2 sentences]";
     }
 
     private List<Tool> buildTools() {
@@ -417,22 +430,36 @@ public class ClaudeAgentService {
     }
 
     private String buildRecoveryPrompt(String recoveredMachineId) {
+        List<String> stillDown = store.getMachines().values().stream()
+                .filter(m -> "DOWN".equals(m.getStatus()))
+                .map(Machine::getId)
+                .sorted()
+                .collect(Collectors.toList());
+
+        String stillDownContext = stillDown.isEmpty()
+                ? "All other machines are running."
+                : String.format("NOTE: %d machine(s) are still offline: %s — the rebalance option "
+                        + "must not assign jobs to these machines.",
+                        stillDown.size(), String.join(", ", stillDown));
+
         return String.format(
-                "Machine %s has come back online after a failure. Use the available tools to:\n"
+                "Machine %s has come back online after a failure. %s Use the available tools to:\n"
                 + "1. Check all machine statuses and current loads (post-failure schedule)\n"
                 + "2. Retrieve the rebalance option (get_time_optimal_schedule — full re-optimisation)\n"
                 + "3. Retrieve the restore option (get_cost_optimal_schedule — original jobs returned)\n"
                 + "4. Assess cascade risk for the recovered machine\n"
                 + "5. Provide a structured analysis in this EXACT format:\n\n"
-                + "SITUATION: [What failed, how jobs were redistributed, and that %s is now recovered]\n\n"
-                + "OPTION A (Rebalance): [Full re-optimisation across all machines — makespan, "
+                + "SITUATION: [What failed, how jobs were redistributed, and that %s is now recovered; "
+                + "mention any machines still offline]\n\n"
+                + "OPTION A (Rebalance): [Full re-optimisation across all available machines — makespan, "
                 + "which machines change, key tradeoffs]\n\n"
                 + "OPTION B (Restore): [Original jobs returned to %s — makespan, "
                 + "minimal disruption, key tradeoffs]\n\n"
                 + "CASCADE RISK: [Is %s stable enough to take load? Any overload risk on either option?]\n\n"
                 + "MY RECOMMENDATION: [Which option and why — consider whether rebalancing is worth "
                 + "the disruption vs. simply restoring the original assignment]",
-                recoveredMachineId, recoveredMachineId, recoveredMachineId, recoveredMachineId);
+                recoveredMachineId, stillDownContext,
+                recoveredMachineId, recoveredMachineId, recoveredMachineId);
     }
 
     private static final String SYSTEM_PROMPT =

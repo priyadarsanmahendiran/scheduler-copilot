@@ -10,6 +10,7 @@ public class ScheduleDecisionResponse {
     private ScheduleMetrics optionAMetrics;
     private ScheduleMetrics optionBMetrics;
     private long expiresAt;
+    private boolean claudeUnavailable;
 
     public ScheduleDecisionResponse() {}
 
@@ -17,7 +18,7 @@ public class ScheduleDecisionResponse {
                                     String optionAText, String optionBText,
                                     Schedule optionASchedule, Schedule optionBSchedule,
                                     ScheduleMetrics optionAMetrics, ScheduleMetrics optionBMetrics,
-                                    long expiresAt) {
+                                    long expiresAt, boolean claudeUnavailable) {
         this.sessionId = sessionId;
         this.claudeAnalysis = claudeAnalysis;
         this.optionAText = optionAText;
@@ -27,6 +28,7 @@ public class ScheduleDecisionResponse {
         this.optionAMetrics = optionAMetrics;
         this.optionBMetrics = optionBMetrics;
         this.expiresAt = expiresAt;
+        this.claudeUnavailable = claudeUnavailable;
     }
 
     public String getSessionId() { return sessionId; }
@@ -55,4 +57,7 @@ public class ScheduleDecisionResponse {
 
     public long getExpiresAt() { return expiresAt; }
     public void setExpiresAt(long expiresAt) { this.expiresAt = expiresAt; }
+
+    public boolean isClaudeUnavailable() { return claudeUnavailable; }
+    public void setClaudeUnavailable(boolean claudeUnavailable) { this.claudeUnavailable = claudeUnavailable; }
 }

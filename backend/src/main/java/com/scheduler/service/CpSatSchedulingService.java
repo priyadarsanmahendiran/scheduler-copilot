@@ -24,6 +24,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
@@ -51,10 +52,10 @@ public class CpSatSchedulingService {
         }
     }
 
-    public ScheduleWithMetrics solveTimeOptimal(String failedMachineId) {
-        SolverInputs inputs = buildInputs(failedMachineId);
+    public ScheduleWithMetrics solveTimeOptimal(String triggeringMachineId) {
+        SolverInputs inputs = buildInputs(triggeringMachineId);
         if (inputs.jobs.isEmpty()) {
-            return emptyResult(inputs, failedMachineId);
+            return emptyResult(inputs);
         }
 
         CpModel model = new CpModel();
@@ -94,13 +95,13 @@ public class CpSatSchedulingService {
             return extractResult(solver, x, inputs, (int) solver.objectiveValue());
         }
         log.warn("CP-SAT time-optimal solver returned {}, falling back to round-robin", status);
-        return fallback(inputs, failedMachineId);
+        return fallback(inputs);
     }
 
-    public ScheduleWithMetrics solveCostOptimal(String failedMachineId) {
-        SolverInputs inputs = buildInputs(failedMachineId);
+    public ScheduleWithMetrics solveCostOptimal(String triggeringMachineId) {
+        SolverInputs inputs = buildInputs(triggeringMachineId);
         if (inputs.jobs.isEmpty()) {
-            return emptyResult(inputs, failedMachineId);
+            return emptyResult(inputs);
         }
 
         CpModel model = new CpModel();
@@ -140,29 +141,49 @@ public class CpSatSchedulingService {
             return extractResultWithMakespan(solver, x, inputs, makespan, disrupted);
         }
         log.warn("CP-SAT cost-optimal solver returned {}, falling back", status);
-        return fallback(inputs, failedMachineId);
+        return fallback(inputs);
     }
 
-    private SolverInputs buildInputs(String failedMachineId) {
+    /**
+     * Builds solver inputs that account for ALL currently-down machines, not just the triggering one.
+     * Jobs from every down machine are collected for rescheduling. The available machines list and
+     * existingAssignments contain only currently-RUNNING machines, so the solver can never assign
+     * a job to a machine that is already down.
+     */
+    private SolverInputs buildInputs(String triggeringMachineId) {
         Schedule current = store.getCurrentSchedule();
         Map<String, List<Job>> assignments = current != null ? current.getAssignments() : Map.of();
 
-        List<Job> jobsToReschedule = assignments.getOrDefault(failedMachineId, List.of());
+        // All down machines: the triggering failure + any others already marked DOWN
+        Set<String> downMachineIds = store.getMachines().values().stream()
+                .filter(m -> "DOWN".equals(m.getStatus()) || triggeringMachineId.equals(m.getId()))
+                .map(m -> m.getId())
+                .collect(Collectors.toSet());
 
+        log.info("Rescheduling with down machines: {}", downMachineIds);
+
+        // Jobs to reschedule = union of all jobs on any down machine
+        List<Job> jobsToReschedule = downMachineIds.stream()
+                .flatMap(mid -> assignments.getOrDefault(mid, List.of()).stream())
+                .collect(Collectors.toList());
+
+        // Available machines = RUNNING machines only, none of which are in downMachineIds
         List<String> availableMachines = store.getMachines().values().stream()
-                .filter(m -> "RUNNING".equals(m.getStatus()) && !failedMachineId.equals(m.getId()))
+                .filter(m -> "RUNNING".equals(m.getStatus()) && !downMachineIds.contains(m.getId()))
                 .map(m -> m.getId())
                 .sorted()
                 .collect(Collectors.toList());
 
+        // existingAssignments and existingLoads cover only running machines
         Map<String, Integer> existingLoads = new HashMap<>();
+        Map<String, List<Job>> runningAssignments = new LinkedHashMap<>();
         for (String machineId : availableMachines) {
-            int load = assignments.getOrDefault(machineId, List.of()).stream()
-                    .mapToInt(Job::getDuration).sum();
-            existingLoads.put(machineId, load);
+            List<Job> currentJobs = assignments.getOrDefault(machineId, List.of());
+            existingLoads.put(machineId, currentJobs.stream().mapToInt(Job::getDuration).sum());
+            runningAssignments.put(machineId, new ArrayList<>(currentJobs));
         }
 
-        return new SolverInputs(jobsToReschedule, availableMachines, existingLoads, assignments);
+        return new SolverInputs(jobsToReschedule, availableMachines, existingLoads, runningAssignments);
     }
 
     private ScheduleWithMetrics extractResult(CpSolver solver, BoolVar[][] x,
@@ -173,10 +194,10 @@ public class CpSatSchedulingService {
     private ScheduleWithMetrics extractResultWithMakespan(CpSolver solver, BoolVar[][] x,
                                                            SolverInputs inputs, int makespan,
                                                            int disrupted) {
-        Map<String, List<Job>> newAssignments = new LinkedHashMap<>(inputs.existingAssignments);
-        newAssignments.remove(findFailedMachine(inputs));
-
+        // existingAssignments already contains only running machines — no need to strip down machines
+        Map<String, List<Job>> newAssignments = new LinkedHashMap<>();
         Map<String, Integer> finalLoads = new HashMap<>();
+
         for (int m = 0; m < inputs.machines.size(); m++) {
             String machineId = inputs.machines.get(m);
             List<Job> machineJobs = new ArrayList<>(
@@ -218,40 +239,23 @@ public class CpSatSchedulingService {
         return max;
     }
 
-    private String findFailedMachine(SolverInputs inputs) {
-        // The failed machine is the one not in our available machines list
-        for (String machineId : inputs.existingAssignments.keySet()) {
-            if (!inputs.machines.contains(machineId)) {
-                return machineId;
-            }
-        }
-        return "";
-    }
-
-    private ScheduleWithMetrics emptyResult(SolverInputs inputs, String failedMachineId) {
-        Map<String, List<Job>> assignments = new LinkedHashMap<>(inputs.existingAssignments);
-        assignments.remove(failedMachineId);
-        Map<String, Integer> loads = new HashMap<>();
-        for (String m : inputs.machines) {
-            loads.put(m, inputs.existingLoads.getOrDefault(m, 0));
-        }
+    private ScheduleWithMetrics emptyResult(SolverInputs inputs) {
+        Map<String, Integer> loads = new HashMap<>(inputs.existingLoads);
         int makespan = loads.values().stream().mapToInt(Integer::intValue).max().orElse(0);
-        return new ScheduleWithMetrics(new Schedule(assignments), new ScheduleMetrics(makespan, 0, loads));
+        return new ScheduleWithMetrics(
+                new Schedule(new LinkedHashMap<>(inputs.existingAssignments)),
+                new ScheduleMetrics(makespan, 0, loads));
     }
 
-    private ScheduleWithMetrics fallback(SolverInputs inputs, String failedMachineId) {
+    private ScheduleWithMetrics fallback(SolverInputs inputs) {
         if (inputs.machines.isEmpty()) {
-            return emptyResult(inputs, failedMachineId);
+            return emptyResult(inputs);
         }
         Map<String, List<Job>> assignments = new LinkedHashMap<>(inputs.existingAssignments);
-        assignments.remove(failedMachineId);
-        for (String m : inputs.machines) {
-            assignments.computeIfAbsent(m, k -> new ArrayList<>());
-        }
         int idx = 0;
         for (Job job : inputs.jobs) {
             String target = inputs.machines.get(idx % inputs.machines.size());
-            assignments.get(target).add(job);
+            assignments.computeIfAbsent(target, k -> new ArrayList<>()).add(job);
             idx++;
         }
         Map<String, Integer> loads = new HashMap<>();
@@ -260,7 +264,9 @@ public class CpSatSchedulingService {
                     .mapToInt(Job::getDuration).sum());
         }
         int makespan = loads.values().stream().mapToInt(Integer::intValue).max().orElse(0);
-        return new ScheduleWithMetrics(new Schedule(assignments), new ScheduleMetrics(makespan, inputs.machines.size(), loads));
+        return new ScheduleWithMetrics(
+                new Schedule(assignments),
+                new ScheduleMetrics(makespan, inputs.machines.size(), loads));
     }
 
     private static class SolverInputs {

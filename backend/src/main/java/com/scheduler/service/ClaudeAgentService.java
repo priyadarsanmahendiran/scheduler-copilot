@@ -15,6 +15,8 @@ import com.anthropic.models.messages.ToolUseBlockParam;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.scheduler.client.AnthropicClient;
+import com.scheduler.model.ChatMessage;
+import com.scheduler.model.DecisionSession;
 import com.scheduler.model.Job;
 import com.scheduler.model.Machine;
 import com.scheduler.model.ScheduleMetrics;
@@ -111,6 +113,50 @@ public class ClaudeAgentService {
 
         log.warn("Claude agent hit max iterations for machine {}", failedMachineId);
         return "Analysis unavailable — agent exceeded iteration limit.";
+    }
+
+    public String chat(DecisionSession session, String userMessage) {
+        List<MessageParam> messages = new ArrayList<>();
+
+        // Seed the conversation with the original analysis as context
+        messages.add(MessageParam.builder()
+                .role(MessageParam.Role.USER)
+                .content("Here is the analysis I provided for the machine failure:\n\n"
+                        + session.getClaudeAnalysis()
+                        + "\n\nThe human operator will now ask follow-up questions. "
+                        + "Answer concisely and stay grounded in the OR-Tools data.")
+                .build());
+        messages.add(MessageParam.builder()
+                .role(MessageParam.Role.ASSISTANT)
+                .content("Understood. I'm ready to discuss the analysis and help the operator make an informed decision.")
+                .build());
+
+        // Replay prior turns in this session
+        for (ChatMessage msg : session.getChatHistory()) {
+            MessageParam.Role role = "user".equals(msg.getRole())
+                    ? MessageParam.Role.USER
+                    : MessageParam.Role.ASSISTANT;
+            messages.add(MessageParam.builder()
+                    .role(role)
+                    .content(msg.getContent())
+                    .build());
+        }
+
+        // Append the new user message
+        messages.add(MessageParam.builder()
+                .role(MessageParam.Role.USER)
+                .content(userMessage)
+                .build());
+
+        MessageCreateParams params = MessageCreateParams.builder()
+                .model(MODEL)
+                .maxTokens(512L)
+                .system(SYSTEM_PROMPT)
+                .messages(messages)
+                .build();
+
+        Message response = anthropicClient.getSdkClient().messages().create(params);
+        return extractText(response);
     }
 
     private String executeTool(ToolUseBlock toolUse, AnalysisContext ctx) {

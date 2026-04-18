@@ -1,7 +1,9 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import MachineCard from './components/MachineCard'
 import GanttChart from './components/GanttChart'
 import AnalysisPanel from './components/AnalysisPanel'
+
+const ANALYZING = 'ANALYZING'
 
 function Toast({ toast }) {
   if (!toast) return null
@@ -22,28 +24,34 @@ function Toast({ toast }) {
 export default function App() {
   const [machines, setMachines] = useState([])
   const [schedule, setSchedule] = useState(null)
+  // Map of machineId → sessionId | 'ANALYZING'  (polled from backend every 2s)
+  const [pendingSessions, setPendingSessions] = useState({})
   const [decision, setDecision] = useState(null)
-  const [analyzing, setAnalyzing] = useState(false)
   const [analyzingId, setAnalyzingId] = useState(null)
+  const [panelOpen, setPanelOpen] = useState(false)
   const [toast, setToast] = useState(null)
+
+  const prevPendingRef = useRef({})
 
   const showToast = (msg, type = 'info') => {
     setToast({ msg, type })
     setTimeout(() => setToast(null), 4000)
   }
 
-  // Poll machines and schedule every 2s
+  // Poll machines, schedule, and pending sessions every 2s
   useEffect(() => {
     const poll = async () => {
       try {
-        const [mRes, sRes] = await Promise.all([
+        const [mRes, sRes, pRes] = await Promise.all([
           fetch('/machines'),
           fetch('/schedule'),
+          fetch('/api/schedule/pending'),
         ])
         if (mRes.ok) setMachines(await mRes.json())
         if (sRes.ok) setSchedule(await sRes.json())
+        if (pRes.ok) setPendingSessions(await pRes.json())
       } catch {
-        // backend not ready yet, retry silently
+        // backend not ready yet
       }
     }
     poll()
@@ -51,16 +59,49 @@ export default function App() {
     return () => clearInterval(id)
   }, [])
 
+  // Detect external failure events: Swagger / real machine failure.
+  // When a machine goes to ANALYZING we open the panel; when it finishes we load the session.
+  useEffect(() => {
+    const prev = prevPendingRef.current
+    prevPendingRef.current = pendingSessions
+
+    for (const [machineId, val] of Object.entries(pendingSessions)) {
+      const prevVal = prev[machineId]
+
+      // Machine just entered ANALYZING (triggered externally, not from this browser)
+      if (val === ANALYZING && !prevVal) {
+        setAnalyzingId(machineId)
+        setDecision(null)
+        setPanelOpen(true)
+      }
+
+      // Machine completed analysis (ANALYZING → real session ID)
+      if (val && val !== ANALYZING && prevVal === ANALYZING) {
+        fetch(`/api/schedule/session/${val}`)
+          .then(r => r.ok ? r.json() : null)
+          .then(data => {
+            if (data) {
+              setDecision(data)
+              setAnalyzingId(machineId)
+              setPanelOpen(true)
+            }
+          })
+          .catch(() => {})
+      }
+    }
+  }, [pendingSessions])
+
+  // Triggered by the "Simulate Failure" button in the UI.
+  // The backend will immediately write 'ANALYZING' to pendingSessions, so the poll
+  // will reflect analyzing state even while this fetch is awaiting.
   const simulateFailure = async (machineId) => {
-    setAnalyzing(true)
     setAnalyzingId(machineId)
     setDecision(null)
+    setPanelOpen(true)
 
     try {
-      // Block the heartbeat so FailureDetectionService marks it DOWN
       await fetch(`/machines/${machineId}/down`, { method: 'POST' })
 
-      // Trigger OR-Tools + Claude analysis directly (no need to wait for auto-detection)
       const res = await fetch('/api/schedule/failure', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -70,10 +111,27 @@ export default function App() {
       setDecision(await res.json())
     } catch (e) {
       showToast(e.message || 'Failed to analyze failure', 'error')
-      setAnalyzing(false)
+      setPanelOpen(false)
       setAnalyzingId(null)
-    } finally {
-      setAnalyzing(false)
+    }
+  }
+
+  const openPanel = async (machineId) => {
+    if (analyzingId === machineId && decision) {
+      setPanelOpen(true)
+      return
+    }
+    const sessionId = pendingSessions[machineId]
+    if (!sessionId || sessionId === ANALYZING) return
+    try {
+      const res = await fetch(`/api/schedule/session/${sessionId}`)
+      if (!res.ok) throw new Error(`${res.status}`)
+      const data = await res.json()
+      setDecision(data)
+      setAnalyzingId(machineId)
+      setPanelOpen(true)
+    } catch (e) {
+      showToast('Failed to load analysis', 'error')
     }
   }
 
@@ -91,6 +149,7 @@ export default function App() {
         showToast('✓ Schedule updated successfully', 'success')
         setDecision(null)
         setAnalyzingId(null)
+        setPanelOpen(false)
       } else if (result.needsClarification) {
         showToast(result.clarificationMessage, 'warning')
       }
@@ -99,10 +158,13 @@ export default function App() {
     }
   }
 
-  const dismissPanel = () => {
-    setDecision(null)
-    setAnalyzingId(null)
-  }
+  const dismissPanel = () => setPanelOpen(false)
+
+  // analyzing = backend is still running CP-SAT + Claude for the tracked machine,
+  //             AND we don't already have a decision loaded (decision takes priority)
+  const analyzing = !!analyzingId
+    && pendingSessions[analyzingId] === ANALYZING
+    && !decision
 
   const downCount = machines.filter(m => m.status === 'DOWN').length
   const systemOk = downCount === 0
@@ -148,9 +210,10 @@ export default function App() {
               <MachineCard
                 key={m.id}
                 machine={m}
-                isAnalyzing={analyzingId === m.id && analyzing}
-                hasPendingDecision={analyzingId === m.id && !!decision}
+                isAnalyzing={pendingSessions[m.id] === ANALYZING}
+                hasPendingDecision={pendingSessions[m.id] && pendingSessions[m.id] !== ANALYZING}
                 onSimulate={simulateFailure}
+                onOpenPanel={openPanel}
               />
             ))}
           </div>
@@ -181,17 +244,16 @@ export default function App() {
               </h2>
               {analyzingId && (
                 <p className="text-xs text-amber-400 mt-0.5">
-                  {analyzing ? `Rescheduling ${analyzingId} jobs…` : `${analyzingId} jobs rescheduled — awaiting operator decision`}
+                  {analyzing
+                    ? `Rescheduling ${analyzingId} jobs…`
+                    : `${analyzingId} jobs rescheduled — awaiting operator decision`}
                 </p>
               )}
             </div>
             <span className="text-xs text-slate-600">↻ Live — updates every 2s</span>
           </div>
 
-          <GanttChart
-            schedule={schedule}
-            failedMachineId={analyzingId}
-          />
+          <GanttChart schedule={schedule} failedMachineId={analyzingId} />
 
           {!schedule && (
             <div className="mt-4 text-center text-slate-600 text-sm">
@@ -201,7 +263,7 @@ export default function App() {
         </main>
 
         {/* Analysis panel */}
-        {(analyzing || decision) && (
+        {panelOpen && (analyzing || decision) && (
           <AnalysisPanel
             decision={decision}
             analyzing={analyzing}

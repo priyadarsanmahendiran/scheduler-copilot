@@ -1,5 +1,9 @@
 package com.scheduler.model;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
 public class DecisionSession {
     private String sessionId;
     private SchedulePair schedulePair;
@@ -9,12 +13,15 @@ public class DecisionSession {
     private ScheduleMetrics optionAMetrics;
     private ScheduleMetrics optionBMetrics;
     private long createdAt;
+    private boolean claudeUnavailable;
+    private final List<ChatMessage> chatHistory = Collections.synchronizedList(new ArrayList<>());
 
     public DecisionSession() {}
 
     public DecisionSession(String sessionId, SchedulePair schedulePair,
                            String claudeAnalysis, String optionAText, String optionBText,
-                           ScheduleMetrics optionAMetrics, ScheduleMetrics optionBMetrics) {
+                           ScheduleMetrics optionAMetrics, ScheduleMetrics optionBMetrics,
+                           boolean claudeUnavailable) {
         this.sessionId = sessionId;
         this.schedulePair = schedulePair;
         this.claudeAnalysis = claudeAnalysis;
@@ -22,6 +29,7 @@ public class DecisionSession {
         this.optionBText = optionBText;
         this.optionAMetrics = optionAMetrics;
         this.optionBMetrics = optionBMetrics;
+        this.claudeUnavailable = claudeUnavailable;
         this.createdAt = System.currentTimeMillis();
     }
 
@@ -48,4 +56,13 @@ public class DecisionSession {
 
     public long getCreatedAt() { return createdAt; }
     public void setCreatedAt(long createdAt) { this.createdAt = createdAt; }
+
+    public boolean isClaudeUnavailable() { return claudeUnavailable; }
+    public void setClaudeUnavailable(boolean claudeUnavailable) { this.claudeUnavailable = claudeUnavailable; }
+
+    public List<ChatMessage> getChatHistory() { return chatHistory; }
+
+    public void addChatMessage(String role, String content) {
+        chatHistory.add(new ChatMessage(role, content));
+    }
 }

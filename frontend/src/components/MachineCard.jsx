@@ -1,4 +1,4 @@
-export default function MachineCard({ machine, isAnalyzing, hasPendingDecision, onSimulate }) {
+export default function MachineCard({ machine, isAnalyzing, hasPendingDecision, onSimulate, onOpenPanel }) {
   const isRunning = machine.status === 'RUNNING'
   const isDown = machine.status === 'DOWN'
   const heartbeatAge = Math.round((Date.now() - machine.lastHeartbeat) / 1000)
@@ -45,11 +45,15 @@ export default function MachineCard({ machine, isAnalyzing, hasPendingDecision, 
         </div>
       )}
 
-      {hasPendingDecision && (
-        <div className="flex items-center gap-1.5 text-purple-300 text-xs mb-3 bg-purple-950/40 rounded-lg px-2.5 py-1.5">
-          <span>⚡</span>
-          <span>Decision ready — see panel →</span>
-        </div>
+      {hasPendingDecision && !isAnalyzing && (
+        <button
+          onClick={() => onOpenPanel(machine.id)}
+          className="w-full text-xs py-2 px-3 rounded-lg border border-purple-500/60 text-purple-300
+            bg-purple-950/30 hover:bg-purple-900/40 hover:border-purple-400/70 hover:text-purple-200
+            transition-all duration-200 flex items-center justify-center gap-1.5 mb-2">
+          <span>🤖</span>
+          <span>View Claude Analysis</span>
+        </button>
       )}
 
       {isRunning && !isAnalyzing && !hasPendingDecision && (

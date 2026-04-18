@@ -1,5 +1,7 @@
 package com.scheduler.controller;
 
+import com.scheduler.model.ChatRequest;
+import com.scheduler.model.ChatResponse;
 import com.scheduler.model.ChoiceResponse;
 import com.scheduler.model.MachineFailureRequest;
 import com.scheduler.model.ScheduleDecisionResponse;
@@ -44,6 +46,16 @@ public class ScheduleDecisionController {
         }
         return ResponseEntity.ok(
                 scheduleDecisionService.processChoice(request.getSessionId(), request.getUserMessage()));
+    }
+
+    @PostMapping("/chat")
+    public ResponseEntity<ChatResponse> chat(@RequestBody ChatRequest request) {
+        if (request.getSessionId() == null || request.getMessage() == null || request.getMessage().isBlank()) {
+            return ResponseEntity.badRequest().build();
+        }
+        return scheduleDecisionService.chat(request.getSessionId(), request.getMessage())
+                .map(reply -> ResponseEntity.ok(new ChatResponse(reply)))
+                .orElse(ResponseEntity.notFound().build());
     }
 
     @GetMapping("/session/{sessionId}")

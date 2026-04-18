@@ -5,9 +5,12 @@ import com.scheduler.model.ChoiceResult;
 import com.scheduler.model.DecisionSession;
 import com.scheduler.model.Schedule;
 import com.scheduler.model.ScheduleDecisionResponse;
+import com.scheduler.model.ScheduleMetrics;
 import com.scheduler.model.SchedulePair;
 import com.scheduler.model.ScheduleWithMetrics;
 import com.scheduler.store.InMemoryStore;
+
+import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -39,8 +42,28 @@ public class ScheduleDecisionService {
         this.store = store;
     }
 
+    // Sentinel value written to pendingSessionByMachine while analysis is running.
+    // The frontend polls this map and shows a spinner for any machine with this value.
+    public static final String ANALYZING_SENTINEL = "ANALYZING";
+
     public ScheduleDecisionResponse processFailure(String machineId) {
         log.info("Processing failure decision flow for machine {}", machineId);
+
+        // Write sentinel immediately so the UI can show "analyzing" state before Claude finishes.
+        store.setPendingSession(machineId, ANALYZING_SENTINEL);
+
+        // Clear stale sessions for other machines — this new analysis covers all currently-down
+        // machines together, so any earlier single-machine session is now superseded.
+        sessionCache.entrySet().removeIf(entry -> {
+            String staleMachine = entry.getValue().getSchedulePair().getFailedMachineId();
+            if (!machineId.equals(staleMachine)) {
+                store.clearPendingSession(staleMachine);
+                log.info("Cleared stale session {} for {} (superseded by {} analysis)",
+                        entry.getKey(), staleMachine, machineId);
+                return true;
+            }
+            return false;
+        });
 
         ScheduleWithMetrics timeOpt = cpSatSchedulingService.solveTimeOptimal(machineId);
         ScheduleWithMetrics costOpt = cpSatSchedulingService.solveCostOptimal(machineId);
@@ -48,7 +71,16 @@ public class ScheduleDecisionService {
         log.info("OR-Tools solutions: time-optimal makespan={}min, cost-optimal disrupted={}",
                 timeOpt.getMetrics().getMakespan(), costOpt.getMetrics().getDisruptedCount());
 
-        String claudeAnalysis = claudeAgentService.analyze(machineId, timeOpt, costOpt);
+        boolean claudeUnavailable = false;
+        String claudeAnalysis;
+        try {
+            claudeAnalysis = claudeAgentService.analyze(machineId, timeOpt, costOpt);
+        } catch (Exception e) {
+            log.warn("Claude API unavailable, using OR-Tools fallback analysis: {}", e.getMessage());
+            claudeAnalysis = buildFallbackAnalysis(machineId, timeOpt, costOpt);
+            claudeUnavailable = true;
+        }
+
         String[] parts = splitOptions(claudeAnalysis);
 
         Schedule original = store.getCurrentSchedule();
@@ -56,7 +88,7 @@ public class ScheduleDecisionService {
         SchedulePair pair = new SchedulePair(machineId, original,
                 timeOpt.getSchedule(), costOpt.getSchedule());
         DecisionSession session = new DecisionSession(sessionId, pair, claudeAnalysis,
-                parts[0], parts[1], timeOpt.getMetrics(), costOpt.getMetrics());
+                parts[0], parts[1], timeOpt.getMetrics(), costOpt.getMetrics(), claudeUnavailable);
         sessionCache.put(sessionId, session);
         store.setPendingSession(machineId, sessionId);
 
@@ -105,6 +137,23 @@ public class ScheduleDecisionService {
         return ChoiceResponse.applied(chosen);
     }
 
+    public Optional<String> chat(String sessionId, String userMessage) {
+        DecisionSession session = sessionCache.get(sessionId);
+        if (session == null || isExpired(session)) return Optional.empty();
+
+        String reply;
+        try {
+            reply = claudeAgentService.chat(session, userMessage);
+        } catch (Exception e) {
+            log.warn("Claude API unavailable for chat: {}", e.getMessage());
+            reply = "I'm unable to respond right now due to an API connectivity issue. "
+                  + "Please review the OR-Tools metrics above to make your decision.";
+        }
+        session.addChatMessage("user", userMessage);
+        session.addChatMessage("assistant", reply);
+        return Optional.of(reply);
+    }
+
     @Scheduled(fixedRate = 60_000)
     public void cleanupExpiredSessions() {
         long before = sessionCache.size();
@@ -129,25 +178,49 @@ public class ScheduleDecisionService {
                 session.getSchedulePair().getCostOptimal(),
                 session.getOptionAMetrics(),
                 session.getOptionBMetrics(),
-                session.getCreatedAt() + SESSION_TTL_MS);
+                session.getCreatedAt() + SESSION_TTL_MS,
+                session.isClaudeUnavailable());
     }
 
     private boolean isExpired(DecisionSession session) {
         return System.currentTimeMillis() - session.getCreatedAt() > SESSION_TTL_MS;
     }
 
+    private String buildFallbackAnalysis(String machineId,
+                                         ScheduleWithMetrics timeOpt,
+                                         ScheduleWithMetrics costOpt) {
+        ScheduleMetrics a = timeOpt.getMetrics();
+        ScheduleMetrics b = costOpt.getMetrics();
+        String available = timeOpt.getSchedule().getAssignments().keySet()
+                .stream().sorted().collect(Collectors.joining(", "));
+        return String.format(
+                "SITUATION: Machine %s has gone offline. OR-Tools CP-SAT has computed two rescheduling "
+                + "options redistributing its jobs across available machines (%s).\n\n"
+                + "OPTION A (Fast): Time-optimal schedule minimising total completion time. "
+                + "Makespan: %d minutes, affecting %d machine(s). "
+                + "Spreads load evenly to finish all jobs as quickly as possible.\n\n"
+                + "OPTION B (Cheap): Disruption-minimal schedule limiting machines affected. "
+                + "Makespan: %d minutes, touching only %d machine(s). "
+                + "Consolidates work to reduce downstream process disruption.\n\n"
+                + "CASCADE RISK: Option A spreads load across more machines, keeping per-machine "
+                + "workload lower. Option B concentrates work on fewer machines — verify those "
+                + "machines have sufficient capacity headroom before applying.\n\n"
+                + "MY RECOMMENDATION: Choose Option A to minimise total production time. "
+                + "Choose Option B to limit disruption to other machines and processes.",
+                machineId, available,
+                a.getMakespan(), a.getDisruptedCount(),
+                b.getMakespan(), b.getDisruptedCount());
+    }
+
     private String[] splitOptions(String analysis) {
-        String optionA = "";
-        String optionB = "";
-        for (String line : analysis.split("\n")) {
-            if (line.startsWith("OPTION A")) {
-                optionA = line.replaceFirst("OPTION A \\(Fast\\):\\s*", "").trim();
-            } else if (line.startsWith("OPTION B")) {
-                optionB = line.replaceFirst("OPTION B \\(Cheap\\):\\s*", "").trim();
-            }
-        }
-        if (optionA.isEmpty()) optionA = analysis;
-        if (optionB.isEmpty()) optionB = analysis;
+        java.util.regex.Matcher mA = java.util.regex.Pattern.compile(
+                "OPTION A[^:]*:\\s*([\\s\\S]*?)(?=\\n\\nOPTION B|\\nOPTION B|\\n\\nCASCADE|$)",
+                java.util.regex.Pattern.CASE_INSENSITIVE).matcher(analysis);
+        java.util.regex.Matcher mB = java.util.regex.Pattern.compile(
+                "OPTION B[^:]*:\\s*([\\s\\S]*?)(?=\\n\\nCASCADE|\\nCASCADE|\\n\\nMY RECOMMEND|$)",
+                java.util.regex.Pattern.CASE_INSENSITIVE).matcher(analysis);
+        String optionA = mA.find() ? mA.group(1).trim() : analysis;
+        String optionB = mB.find() ? mB.group(1).trim() : analysis;
         return new String[]{optionA, optionB};
     }
 }

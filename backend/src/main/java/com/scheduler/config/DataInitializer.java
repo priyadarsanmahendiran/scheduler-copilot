@@ -27,11 +27,14 @@ public class DataInitializer {
         store.getMachines().put("M2", new Machine("M2", "RUNNING", now));
         store.getMachines().put("M3", new Machine("M3", "RUNNING", now));
 
-        Job j1 = new Job("J1", "M1", 30);
-        Job j2 = new Job("J2", "M1", 45);
-        Job j3 = new Job("J3", "M2", 60);
-        Job j4 = new Job("J4", "M2", 20);
-        Job j5 = new Job("J5", "M3", 50);
+        // Deadlines chosen so that time-optimal rescheduling (faster, spreads load) avoids all
+        // breaches, while cost-optimal (fewer machines disrupted, jobs pile on one machine)
+        // causes J2 to slip past its deadline — making the SLA tradeoff visible in the UI.
+        Job j1 = new Job("J1", "M1", 30, 120);  // comfortable
+        Job j2 = new Job("J2", "M1", 45, 110);  // breaches under cost-optimal when M1 fails
+        Job j3 = new Job("J3", "M2", 60,  70);  // breaches if pushed behind existing M3 load
+        Job j4 = new Job("J4", "M2", 20, 120);  // comfortable
+        Job j5 = new Job("J5", "M3", 50, 130);  // comfortable
 
         for (Job job : List.of(j1, j2, j3, j4, j5)) {
             store.getJobs().put(job.getId(), job);

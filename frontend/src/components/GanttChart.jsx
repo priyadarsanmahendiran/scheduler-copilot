@@ -31,7 +31,7 @@ function computeBars(assignments) {
   return { bars, maxTime }
 }
 
-function GanttRow({ machineId, bars, isFailed, label }) {
+function GanttRow({ machineId, bars, isFailed, label, slaBreachSet }) {
   return (
     <div className="flex items-center gap-3">
       <div className={`w-14 text-sm font-bold flex-shrink-0 text-right ${
@@ -51,28 +51,35 @@ function GanttRow({ machineId, bars, isFailed, label }) {
             <span>FAILED — JOBS RESCHEDULED</span>
           </div>
         ) : (
-          bars.map(({ job, startPct, widthPct, color }) => (
-            <div
-              key={job.id}
-              className="absolute top-1.5 bottom-1.5 rounded-md flex items-center justify-center
-                         text-xs font-semibold text-white shadow-md transition-all duration-500"
-              style={{
-                left: `${startPct}%`,
-                width: `max(${widthPct}%, 28px)`,
-                backgroundColor: color,
-              }}
-              title={`${job.id} — ${job.duration} min`}
-            >
-              {widthPct > 7 ? job.id : ''}
-            </div>
-          ))
+          bars.map(({ job, startPct, widthPct, color }) => {
+            const breached = slaBreachSet?.has(job.id)
+            return (
+              <div
+                key={job.id}
+                className={`absolute top-1.5 bottom-1.5 rounded-md flex items-center justify-center gap-0.5
+                             text-xs font-semibold text-white shadow-md transition-all duration-500
+                             ${breached ? 'ring-2 ring-inset ring-red-300/70' : ''}`}
+                style={{
+                  left: `${startPct}%`,
+                  width: `max(${widthPct}%, 28px)`,
+                  backgroundColor: breached ? '#b91c1c' : color,
+                }}
+                title={breached
+                  ? `${job.id} — ${job.duration}min ⚠ SLA BREACH (deadline: ${job.deadline}min)`
+                  : `${job.id} — ${job.duration}min`}
+              >
+                {breached && <span className="text-[10px] leading-none">⚠</span>}
+                {widthPct > 7 ? job.id : (breached ? '' : '')}
+              </div>
+            )
+          })
         )}
       </div>
     </div>
   )
 }
 
-export default function GanttChart({ schedule, failedMachineId, title, highlightColor }) {
+export default function GanttChart({ schedule, failedMachineId, title, highlightColor, slaBreaches }) {
   if (!schedule?.assignments || Object.keys(schedule.assignments).length === 0) {
     return (
       <div className={`rounded-xl border p-8 flex items-center justify-center text-slate-500 text-sm ${
@@ -85,6 +92,7 @@ export default function GanttChart({ schedule, failedMachineId, title, highlight
     )
   }
 
+  const slaBreachSet = slaBreaches?.length ? new Set(slaBreaches) : null
   const { bars, maxTime } = computeBars(schedule.assignments)
   const machines = Object.keys(schedule.assignments).sort()
 
@@ -144,20 +152,37 @@ export default function GanttChart({ schedule, failedMachineId, title, highlight
             machineId={machineId}
             bars={bars[machineId] || []}
             isFailed={machineId === failedMachineId}
+            slaBreachSet={slaBreachSet}
           />
         ))}
       </div>
 
+      {/* SLA breach summary */}
+      {slaBreachSet && slaBreachSet.size > 0 && (
+        <div className="mt-3 flex items-center gap-2 px-3 py-2 bg-red-950/40 border border-red-800/40 rounded-lg">
+          <span className="text-red-400 text-sm">⚠</span>
+          <span className="text-xs text-red-300 font-semibold">
+            SLA breach{slaBreachSet.size > 1 ? 'es' : ''} in applied schedule:
+          </span>
+          <span className="text-xs text-red-300/80">{[...slaBreachSet].join(', ')}</span>
+        </div>
+      )}
+
       {/* Legend */}
       {allJobs.length > 0 && (
         <div className="flex flex-wrap gap-3 mt-4 pt-3 border-t border-slate-700/60">
-          {allJobs.map(job => (
-            <div key={job.id} className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0"
-                    style={{ backgroundColor: colorFor(job.id) }} />
-              <span className="text-xs text-slate-400">{job.id} ({job.duration}m)</span>
-            </div>
-          ))}
+          {allJobs.map(job => {
+            const breached = slaBreachSet?.has(job.id)
+            return (
+              <div key={job.id} className="flex items-center gap-1.5">
+                <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0"
+                      style={{ backgroundColor: breached ? '#b91c1c' : colorFor(job.id) }} />
+                <span className={`text-xs ${breached ? 'text-red-400 font-semibold' : 'text-slate-400'}`}>
+                  {breached && '⚠ '}{job.id} ({job.duration}m)
+                </span>
+              </div>
+            )
+          })}
         </div>
       )}
     </div>

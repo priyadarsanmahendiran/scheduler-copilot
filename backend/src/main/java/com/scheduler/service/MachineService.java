@@ -9,9 +9,11 @@ import java.util.List;
 @Service
 public class MachineService {
     private final InMemoryStore store;
+    private final SseBroadcaster broadcaster;
 
-    public MachineService(InMemoryStore store) {
+    public MachineService(InMemoryStore store, SseBroadcaster broadcaster) {
         this.store = store;
+        this.broadcaster = broadcaster;
     }
 
     public List<Machine> getAllMachines() {
@@ -32,6 +34,10 @@ public class MachineService {
     public void updateHeartbeat(String id, long timestamp) {
         Machine machine = store.getMachines().get(id);
         if (machine != null) {
+            long prev = machine.getLastHeartbeat();
+            if (prev > 0) {
+                store.recordHeartbeatInterval(id, timestamp - prev);
+            }
             machine.setLastHeartbeat(timestamp);
         }
     }
@@ -40,6 +46,18 @@ public class MachineService {
         Machine machine = store.getMachines().get(id);
         if (machine != null) {
             machine.setHeartbeatBlocked(true);
+            machine.setRiskLevel(null);
+            machine.setRiskReason(null);
+            store.clearHeartbeatIntervals(id);
+            broadcaster.broadcast("machines", getAllMachines());
+        }
+    }
+
+    public void markAsDegraded(String id) {
+        Machine machine = store.getMachines().get(id);
+        if (machine != null) {
+            machine.setDegraded(true);
+            broadcaster.broadcast("machines", getAllMachines());
         }
     }
 }

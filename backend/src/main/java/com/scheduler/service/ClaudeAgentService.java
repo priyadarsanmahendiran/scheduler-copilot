@@ -228,6 +228,7 @@ public class ClaudeAgentService {
         sb.append(String.format("Makespan: %d min | Machines disrupted: %d\n",
                 metrics.getMakespan(), metrics.getDisruptedCount()));
         sb.append("Assignments:\n");
+        List<String> breachedJobs = new ArrayList<>();
         swm.getSchedule().getAssignments().forEach((machineId, jobs) -> {
             String jobSummary = jobs.stream()
                     .map(j -> j.getId() + "(" + j.getDuration() + "min)")
@@ -235,7 +236,20 @@ public class ClaudeAgentService {
             sb.append(String.format("  %s: [%s] total=%d min\n",
                     machineId, jobSummary,
                     jobs.stream().mapToInt(Job::getDuration).sum()));
+            int elapsed = 0;
+            for (Job j : jobs) {
+                elapsed += j.getDuration();
+                if (j.getDeadline() > 0 && elapsed > j.getDeadline()) {
+                    breachedJobs.add(j.getId() + "(deadline=" + j.getDeadline() + "min,finish=" + elapsed + "min)");
+                }
+            }
         });
+        if (!breachedJobs.isEmpty()) {
+            sb.append(String.format("SLA BREACHES: %d job(s) will miss deadline — %s\n",
+                    breachedJobs.size(), String.join(", ", breachedJobs)));
+        } else {
+            sb.append("SLA: All jobs meet their deadlines\n");
+        }
         return sb.toString();
     }
 

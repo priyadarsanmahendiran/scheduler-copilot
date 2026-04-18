@@ -11,6 +11,8 @@ public class ScheduleDecisionResponse {
     private ScheduleMetrics optionBMetrics;
     private long expiresAt;
     private boolean claudeUnavailable;
+    private SlaBreachResult optionASla;
+    private SlaBreachResult optionBSla;
 
     public ScheduleDecisionResponse() {}
 
@@ -18,7 +20,8 @@ public class ScheduleDecisionResponse {
                                     String optionAText, String optionBText,
                                     Schedule optionASchedule, Schedule optionBSchedule,
                                     ScheduleMetrics optionAMetrics, ScheduleMetrics optionBMetrics,
-                                    long expiresAt, boolean claudeUnavailable) {
+                                    long expiresAt, boolean claudeUnavailable,
+                                    SlaBreachResult optionASla, SlaBreachResult optionBSla) {
         this.sessionId = sessionId;
         this.claudeAnalysis = claudeAnalysis;
         this.optionAText = optionAText;
@@ -29,6 +32,8 @@ public class ScheduleDecisionResponse {
         this.optionBMetrics = optionBMetrics;
         this.expiresAt = expiresAt;
         this.claudeUnavailable = claudeUnavailable;
+        this.optionASla = optionASla;
+        this.optionBSla = optionBSla;
     }
 
     public String getSessionId() { return sessionId; }
@@ -60,4 +65,10 @@ public class ScheduleDecisionResponse {
 
     public boolean isClaudeUnavailable() { return claudeUnavailable; }
     public void setClaudeUnavailable(boolean claudeUnavailable) { this.claudeUnavailable = claudeUnavailable; }
+
+    public SlaBreachResult getOptionASla() { return optionASla; }
+    public void setOptionASla(SlaBreachResult optionASla) { this.optionASla = optionASla; }
+
+    public SlaBreachResult getOptionBSla() { return optionBSla; }
+    public void setOptionBSla(SlaBreachResult optionBSla) { this.optionBSla = optionBSla; }
 }

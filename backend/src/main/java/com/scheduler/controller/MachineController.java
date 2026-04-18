@@ -24,4 +24,13 @@ public class MachineController {
         machineService.markAsDown(id);
         return ResponseEntity.ok("Machine " + id + " marked as DOWN");
     }
+
+    @PostMapping("/{id}/degrade")
+    public ResponseEntity<String> simulateDegradation(@PathVariable String id) {
+        if (machineService.getMachineById(id) == null) {
+            return ResponseEntity.notFound().build();
+        }
+        machineService.markAsDegraded(id);
+        return ResponseEntity.ok("Machine " + id + " degradation simulation started");
+    }
 }

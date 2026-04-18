@@ -30,6 +30,8 @@ export default function App() {
   const [analyzingId, setAnalyzingId] = useState(null)
   const [panelOpen, setPanelOpen] = useState(false)
   const [toast, setToast] = useState(null)
+  // Job IDs that breach SLA in the currently active schedule
+  const [activeSlaBreaches, setActiveSlaBreaches] = useState([])
 
   const prevPendingRef = useRef({})
 
@@ -38,25 +40,22 @@ export default function App() {
     setTimeout(() => setToast(null), 4000)
   }
 
-  // Poll machines, schedule, and pending sessions every 2s
+  // Subscribe to server-sent events for live state updates.
+  // EventSource reconnects automatically on network errors.
   useEffect(() => {
-    const poll = async () => {
-      try {
-        const [mRes, sRes, pRes] = await Promise.all([
-          fetch('/machines'),
-          fetch('/schedule'),
-          fetch('/api/schedule/pending'),
-        ])
-        if (mRes.ok) setMachines(await mRes.json())
-        if (sRes.ok) setSchedule(await sRes.json())
-        if (pRes.ok) setPendingSessions(await pRes.json())
-      } catch {
-        // backend not ready yet
-      }
-    }
-    poll()
-    const id = setInterval(poll, 2000)
-    return () => clearInterval(id)
+    const es = new EventSource('/api/events')
+
+    es.addEventListener('machines', e => {
+      try { setMachines(JSON.parse(e.data)) } catch {}
+    })
+    es.addEventListener('schedule', e => {
+      try { setSchedule(JSON.parse(e.data)) } catch {}
+    })
+    es.addEventListener('pending', e => {
+      try { setPendingSessions(JSON.parse(e.data)) } catch {}
+    })
+
+    return () => es.close()
   }, [])
 
   // Detect external failure events: Swagger / real machine failure.
@@ -73,6 +72,7 @@ export default function App() {
         setAnalyzingId(machineId)
         setDecision(null)
         setPanelOpen(true)
+        setActiveSlaBreaches([])
       }
 
       // Machine completed analysis (ANALYZING → real session ID)
@@ -98,6 +98,7 @@ export default function App() {
     setAnalyzingId(machineId)
     setDecision(null)
     setPanelOpen(true)
+    setActiveSlaBreaches([])
 
     try {
       await fetch(`/machines/${machineId}/down`, { method: 'POST' })
@@ -146,6 +147,9 @@ export default function App() {
       const result = await res.json()
 
       if (result.applied) {
+        const isOptionA = userMessage.toLowerCase().includes('option a')
+        const sla = isOptionA ? decision.optionASla : decision.optionBSla
+        setActiveSlaBreaches(sla?.breachedJobIds || [])
         showToast('✓ Schedule updated successfully', 'success')
         setDecision(null)
         setAnalyzingId(null)
@@ -155,6 +159,15 @@ export default function App() {
       }
     } catch (e) {
       showToast('Failed to submit choice', 'error')
+    }
+  }
+
+  const simulateDegradation = async (machineId) => {
+    try {
+      await fetch(`/machines/${machineId}/degrade`, { method: 'POST' })
+      showToast(`Degradation simulation started for ${machineId}`, 'warning')
+    } catch {
+      showToast('Failed to start degradation simulation', 'error')
     }
   }
 
@@ -214,6 +227,7 @@ export default function App() {
                 hasPendingDecision={pendingSessions[m.id] && pendingSessions[m.id] !== ANALYZING}
                 onSimulate={simulateFailure}
                 onOpenPanel={openPanel}
+                onDegrade={simulateDegradation}
               />
             ))}
           </div>
@@ -253,7 +267,7 @@ export default function App() {
             <span className="text-xs text-slate-600">↻ Live — updates every 2s</span>
           </div>
 
-          <GanttChart schedule={schedule} failedMachineId={analyzingId} />
+          <GanttChart schedule={schedule} failedMachineId={analyzingId} slaBreaches={activeSlaBreaches} />
 
           {!schedule && (
             <div className="mt-4 text-center text-slate-600 text-sm">

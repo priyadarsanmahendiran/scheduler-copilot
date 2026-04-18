@@ -32,6 +32,27 @@ function MetricBadge({ label, value, color }) {
   )
 }
 
+function SlaBadge({ sla }) {
+  if (!sla) return null
+  if (sla.breachCount === 0) {
+    return (
+      <div className="flex items-center gap-1 text-[10px] font-semibold text-green-400 mt-1">
+        <span>✓</span> All SLAs met
+      </div>
+    )
+  }
+  return (
+    <div className="flex flex-col gap-0.5 mt-1">
+      <div className="flex items-center gap-1 text-[10px] font-semibold text-red-400">
+        <span>⚠</span> {sla.breachCount} SLA breach{sla.breachCount > 1 ? 'es' : ''}
+      </div>
+      <div className="text-[10px] text-red-300/70">
+        {sla.breachedJobIds?.join(', ')}
+      </div>
+    </div>
+  )
+}
+
 function ChatBubble({ role, content }) {
   const isUser = role === 'user'
   return (
@@ -208,7 +229,9 @@ export default function AnalysisPanel({ decision, analyzing, analyzingId, onChoo
               {/* Options side by side */}
               <div className="grid grid-cols-2 gap-3">
                 {/* Option A */}
-                <div className="bg-blue-950/40 rounded-xl p-3.5 border border-blue-800/40 flex flex-col gap-2">
+                <div className={`bg-blue-950/40 rounded-xl p-3.5 flex flex-col gap-2 border ${
+                  decision.optionASla?.breachCount > 0 ? 'border-red-700/50' : 'border-blue-800/40'
+                }`}>
                   <div className="flex items-center gap-1.5">
                     <span className="text-blue-400 font-black text-xs">⚡ A</span>
                     <span className="text-xs font-bold text-blue-300">Fast Track</span>
@@ -217,13 +240,16 @@ export default function AnalysisPanel({ decision, analyzing, analyzingId, onChoo
                     <div className="border-t border-blue-800/30 pt-2">
                       <MetricBadge label="Makespan" value={`${decision.optionAMetrics.makespan}m`} color="text-blue-300" />
                       <MetricBadge label="Disrupted" value={`${decision.optionAMetrics.disruptedCount} machines`} color="text-blue-300" />
+                      <SlaBadge sla={decision.optionASla} />
                     </div>
                   )}
                   <p className="text-xs text-slate-400 leading-relaxed">{sections.optionA || decision.optionAText}</p>
                 </div>
 
                 {/* Option B */}
-                <div className="bg-emerald-950/40 rounded-xl p-3.5 border border-emerald-800/40 flex flex-col gap-2">
+                <div className={`bg-emerald-950/40 rounded-xl p-3.5 flex flex-col gap-2 border ${
+                  decision.optionBSla?.breachCount > 0 ? 'border-red-700/50' : 'border-emerald-800/40'
+                }`}>
                   <div className="flex items-center gap-1.5">
                     <span className="text-emerald-400 font-black text-xs">💰 B</span>
                     <span className="text-xs font-bold text-emerald-300">Cost Optimal</span>
@@ -232,6 +258,7 @@ export default function AnalysisPanel({ decision, analyzing, analyzingId, onChoo
                     <div className="border-t border-emerald-800/30 pt-2">
                       <MetricBadge label="Makespan" value={`${decision.optionBMetrics.makespan}m`} color="text-emerald-300" />
                       <MetricBadge label="Disrupted" value={`${decision.optionBMetrics.disruptedCount} machines`} color="text-emerald-300" />
+                      <SlaBadge sla={decision.optionBSla} />
                     </div>
                   )}
                   <p className="text-xs text-slate-400 leading-relaxed">{sections.optionB || decision.optionBText}</p>

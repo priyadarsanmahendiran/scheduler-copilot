@@ -3,13 +3,17 @@ package com.scheduler.service;
 import com.scheduler.model.ChoiceResponse;
 import com.scheduler.model.ChoiceResult;
 import com.scheduler.model.DecisionSession;
+import com.scheduler.model.Job;
 import com.scheduler.model.Schedule;
 import com.scheduler.model.ScheduleDecisionResponse;
 import com.scheduler.model.ScheduleMetrics;
 import com.scheduler.model.SchedulePair;
 import com.scheduler.model.ScheduleWithMetrics;
+import com.scheduler.model.SlaBreachResult;
 import com.scheduler.store.InMemoryStore;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -83,12 +87,16 @@ public class ScheduleDecisionService {
 
         String[] parts = splitOptions(claudeAnalysis);
 
+        SlaBreachResult slpA = checkSlaBreaches(timeOpt.getSchedule());
+        SlaBreachResult slpB = checkSlaBreaches(costOpt.getSchedule());
+
         Schedule original = store.getCurrentSchedule();
         String sessionId = UUID.randomUUID().toString();
         SchedulePair pair = new SchedulePair(machineId, original,
                 timeOpt.getSchedule(), costOpt.getSchedule());
         DecisionSession session = new DecisionSession(sessionId, pair, claudeAnalysis,
-                parts[0], parts[1], timeOpt.getMetrics(), costOpt.getMetrics(), claudeUnavailable);
+                parts[0], parts[1], timeOpt.getMetrics(), costOpt.getMetrics(),
+                claudeUnavailable, slpA, slpB);
         sessionCache.put(sessionId, session);
         store.setPendingSession(machineId, sessionId);
 
@@ -179,7 +187,23 @@ public class ScheduleDecisionService {
                 session.getOptionAMetrics(),
                 session.getOptionBMetrics(),
                 session.getCreatedAt() + SESSION_TTL_MS,
-                session.isClaudeUnavailable());
+                session.isClaudeUnavailable(),
+                session.getOptionASla(),
+                session.getOptionBSla());
+    }
+
+    private SlaBreachResult checkSlaBreaches(Schedule schedule) {
+        List<String> breachedIds = new ArrayList<>();
+        for (List<Job> jobs : schedule.getAssignments().values()) {
+            int elapsed = 0;
+            for (Job job : jobs) {
+                elapsed += job.getDuration();
+                if (job.getDeadline() > 0 && elapsed > job.getDeadline()) {
+                    breachedIds.add(job.getId());
+                }
+            }
+        }
+        return new SlaBreachResult(breachedIds.size(), breachedIds);
     }
 
     private boolean isExpired(DecisionSession session) {
